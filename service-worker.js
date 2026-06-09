@@ -1,11 +1,12 @@
-const CACHE_NAME = "contractor-production-crm-v1";
+const CACHE_NAME = "jobcommand-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.json",
-  "./icons/icon.svg"
+  "./icons/icon.svg",
+  "./icons/jobcommand-logo.png"
 ];
 
 self.addEventListener("install", (event) => {

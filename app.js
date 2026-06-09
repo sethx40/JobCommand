@@ -3,7 +3,8 @@ const todayIso = new Date().toISOString().slice(0, 10);
 
 const defaults = {
   companyName: "",
-  teamMembers: [],
+  currentUser: "Seth",
+  teamMembers: ["Seth", "Lynn", "Rayson"],
   trades: [
     "Roofing", "Gutters", "Plumbing rough-in", "Electrical rough-in", "HVAC",
     "Drywall", "Paint", "Tile", "Flooring", "Trim",
@@ -42,7 +43,8 @@ function loadState() {
   if (saved) return sanitizeState(JSON.parse(saved));
   const fresh = {
     settings: { ...defaults },
-    jobs: []
+    jobs: [],
+    notifications: []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(fresh));
   return fresh;
@@ -51,10 +53,26 @@ function loadState() {
 function sanitizeState(data) {
   const clean = {
     settings: { ...defaults, ...(data.settings || {}) },
-    jobs: Array.isArray(data.jobs) ? data.jobs.filter((job) => !isOldDemoJob(job)) : []
+    jobs: Array.isArray(data.jobs) ? data.jobs.filter((job) => !isOldDemoJob(job)).map(normalizeJob) : [],
+    notifications: Array.isArray(data.notifications) ? data.notifications : []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(clean));
   return clean;
+}
+
+function normalizeJob(job) {
+  return {
+    ...makeJob({ timeline: [] }),
+    ...job,
+    tasks: Array.isArray(job.tasks) ? job.tasks.map((item) => ({ time: "", ...item })) : [],
+    schedule: Array.isArray(job.schedule) ? job.schedule.map((item) => ({ time: "", ...item })) : [],
+    subs: Array.isArray(job.subs) ? job.subs : [],
+    workOrders: Array.isArray(job.workOrders) ? job.workOrders.map((item) => ({ time: "", ...item })) : [],
+    punchList: Array.isArray(job.punchList) ? job.punchList.map((item) => ({ dueDate: "", time: "", notes: "", ...item })) : [],
+    notesActivity: Array.isArray(job.notesActivity) ? job.notesActivity : [],
+    reminders: Array.isArray(job.reminders) ? job.reminders : [],
+    timeline: Array.isArray(job.timeline) ? job.timeline : []
+  };
 }
 
 function isOldDemoJob(job) {
@@ -75,6 +93,7 @@ function makeJob(data = {}) {
     startDate: "", targetDate: "", materialsStatus: "Not needed",
     homeownerUpdateNeeded: false, notes: "",
     tasks: [], schedule: [], subs: [], workOrders: [], punchList: [],
+    notesActivity: [], reminders: [],
     timeline: [{ id: uid("log"), date: todayIso, text: "Job created" }],
     ...data
   };
@@ -101,6 +120,7 @@ function render() {
   const routes = {
     today: renderToday,
     jobs: renderJobs,
+    calendar: renderCalendar,
     detail: renderJobDetail,
     schedule: renderSchedule,
     workOrders: renderWorkOrders,
@@ -117,7 +137,9 @@ function renderToday() {
   const dueToday = allTasks().filter(({ item }) => !item.complete && item.dueDate === todayIso);
   const overdue = allTasks().filter(({ item }) => !item.complete && item.dueDate && item.dueDate < todayIso);
   const waitingOnSubs = jobs.filter((job) => job.status === "Waiting on Sub");
+  const mentions = unreadMentions();
   const sections = [
+    ["Mentions", mentions],
     ["Jobs starting today", jobs.filter((job) => job.startDate === todayIso)],
     ["Jobs starting this week", jobs.filter((job) => job.startDate >= todayIso && job.startDate <= weekEnd)],
     ["Tasks due today", dueToday],
@@ -160,8 +182,22 @@ function commandHeader(title, date, summary) {
 
 function renderTodaySection([title, items]) {
   return `<section class="section"><h2>${title}</h2><div class="stack">${
-    items.length ? items.map((entry) => entry.job ? taskRow(entry) : miniJob(entry)).join("") : `<div class="empty">Nothing here right now.</div>`
+    items.length ? items.map((entry) => {
+      if (entry.note) return mentionRow(entry);
+      return entry.job ? taskRow(entry) : miniJob(entry);
+    }).join("") : `<div class="empty">Nothing here right now.</div>`
   }</div></section>`;
+}
+
+function mentionRow(entry) {
+  return `<article class="list-row mention-card">
+    <div class="row-between">
+      <div><strong>${entry.job.name}</strong><p class="subtle">${highlightMentions(entry.note.text)}</p></div>
+      ${pill("Unread", "warn")}
+    </div>
+    <p class="subtle">${entry.note.author || "Team"} / ${formatDateTime(entry.note.timestamp)}</p>
+    <div class="row-actions"><button class="secondary-button" data-action="open-job" data-id="${entry.job.id}" type="button">Open job</button><button class="ghost-button" data-action="mark-mention-read" data-id="${entry.notification.id}" type="button">Mark read</button></div>
+  </article>`;
 }
 
 function miniJob(job) {
@@ -262,12 +298,18 @@ function renderJobDetail() {
           <p class="subtle">${job.notes || "No notes yet."}</p>
           <div class="row-actions"><button class="secondary-button" data-action="draft-update" data-id="${job.id}" type="button">Draft homeowner update</button><button class="ghost-button" data-action="toggle-update" data-id="${job.id}" type="button">${job.homeownerUpdateNeeded ? "Clear update flag" : "Needs update"}</button></div>
         </article>
+        <article class="card">
+          <div class="card-head"><h2>Notes / Activity Feed</h2><button class="secondary-button" data-action="add-note" data-id="${job.id}" type="button">Add Note</button></div>
+          ${noteFilter(job)}
+          <div class="stack">${job.notesActivity.length ? job.notesActivity.map((note) => noteDetail(job, note)).join("") : `<div class="empty">No tagged notes yet.</div>`}</div>
+        </article>
         ${detailSection("Tasks", job.tasks.map((t) => taskDetail(job, t)).join(""), "add-task", job.id)}
         ${detailSection("Schedule", job.schedule.map((s) => scheduleDetail(job, s)).join(""), "add-schedule", job.id)}
         ${detailSection("Work Orders", job.workOrders.map((w) => workOrderDetail(job, w)).join(""), "add-work-order", job.id)}
       </div>
       <div class="stack">
     ${detailSection("Subcontractors / Trades", subSummary(job), "add-sub", job.id)}
+        ${detailSection("Reminders", job.reminders.map((r) => reminderDetail(job, r)).join(""), "add-reminder", job.id)}
         ${detailSection("Punch List", job.punchList.map((p) => punchDetail(job, p)).join(""), "add-punch", job.id)}
         <article class="card"><h2>Timeline</h2><div class="stack">${job.timeline.map((l) => `<div class="list-row"><strong>${fmt(l.date)}</strong><span class="subtle">${l.text}</span></div>`).join("")}</div></article>
       </div>
@@ -280,19 +322,34 @@ function detailSection(title, content, action, id) {
 }
 
 function taskDetail(job, t) {
-  return `<div class="list-row"><label class="check-row"><input data-action="toggle-task" data-job="${job.id}" data-id="${t.id}" type="checkbox" ${t.complete ? "checked" : ""}> <strong>${t.title}</strong></label><p class="subtle">${t.assignedTo || "Unassigned"} / Due ${fmt(t.dueDate)} / ${t.priority || "Normal"}</p><div class="row-actions"><button class="ghost-button" data-action="edit-task" data-job="${job.id}" data-id="${t.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-task" data-job="${job.id}" data-id="${t.id}" type="button">Delete</button></div></div>`;
+  return `<div class="list-row"><label class="check-row"><input data-action="toggle-task" data-job="${job.id}" data-id="${t.id}" type="checkbox" ${t.complete ? "checked" : ""}> <strong>${t.title}</strong></label><p class="subtle">${t.assignedTo || "Unassigned"} / Due ${fmt(t.dueDate)} ${t.time || ""} / ${t.priority || "Normal"}</p><div class="row-actions"><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="task" data-id="${t.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="edit-task" data-job="${job.id}" data-id="${t.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-task" data-job="${job.id}" data-id="${t.id}" type="button">Delete</button></div></div>`;
 }
 
 function scheduleDetail(job, s) {
-  return `<div class="list-row"><strong>${s.trade} / ${fmt(s.date)}</strong><p class="subtle">${s.subcontractor || "No sub"} / ${s.status || "Scheduled"} ${s.notes ? "/ " + s.notes : ""}</p><div class="row-actions"><button class="ghost-button" data-action="edit-schedule" data-job="${job.id}" data-id="${s.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-schedule" data-job="${job.id}" data-id="${s.id}" type="button">Delete</button></div></div>`;
+  return `<div class="list-row"><strong>${s.trade} / ${fmt(s.date)} ${s.time || ""}</strong><p class="subtle">${s.subcontractor || "No sub"} / ${s.status || "Scheduled"} ${s.notes ? "/ " + s.notes : ""}</p><div class="row-actions"><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="schedule" data-id="${s.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="edit-schedule" data-job="${job.id}" data-id="${s.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-schedule" data-job="${job.id}" data-id="${s.id}" type="button">Delete</button></div></div>`;
 }
 
 function workOrderDetail(job, w) {
-  return `<div class="list-row"><strong>${w.trade} / ${fmt(w.date)}</strong><p class="subtle">${w.subcontractor || "No sub"} / ${w.scope || "No scope"}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${w.id}" type="button">Print/export</button><button class="ghost-button" data-action="edit-work-order" data-job="${job.id}" data-id="${w.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-work-order" data-job="${job.id}" data-id="${w.id}" type="button">Delete</button></div></div>`;
+  return `<div class="list-row"><strong>${w.trade} / ${fmt(w.date)} ${w.time || ""}</strong><p class="subtle">${w.subcontractor || "No sub"} / ${w.scope || "No scope"}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${w.id}" type="button">Print/export</button><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="work-order" data-id="${w.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="edit-work-order" data-job="${job.id}" data-id="${w.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-work-order" data-job="${job.id}" data-id="${w.id}" type="button">Delete</button></div></div>`;
 }
 
 function punchDetail(job, p) {
-  return `<div class="list-row"><label class="check-row"><input data-action="toggle-punch" data-job="${job.id}" data-id="${p.id}" type="checkbox" ${p.complete ? "checked" : ""}> <strong>${p.title}</strong></label><p class="subtle">${p.assignedTo || "Unassigned"}</p><div class="row-actions"><button class="ghost-button" data-action="edit-punch" data-job="${job.id}" data-id="${p.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-punch" data-job="${job.id}" data-id="${p.id}" type="button">Delete</button></div></div>`;
+  return `<div class="list-row"><label class="check-row"><input data-action="toggle-punch" data-job="${job.id}" data-id="${p.id}" type="checkbox" ${p.complete ? "checked" : ""}> <strong>${p.title}</strong></label><p class="subtle">${p.assignedTo || "Unassigned"} ${p.dueDate ? "/ Due " + fmt(p.dueDate) : ""}</p><div class="row-actions"><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="punch" data-id="${p.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="edit-punch" data-job="${job.id}" data-id="${p.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-punch" data-job="${job.id}" data-id="${p.id}" type="button">Delete</button></div></div>`;
+}
+
+function reminderDetail(job, r) {
+  return `<div class="list-row"><strong>${r.title || "Reminder"}</strong><p class="subtle">${fmt(r.date)} ${r.time || ""} / ${r.assignedTo || "Unassigned"} ${r.notes ? "/ " + r.notes : ""}</p><div class="row-actions"><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="reminder" data-id="${r.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="edit-reminder" data-job="${job.id}" data-id="${r.id}" type="button">Edit</button><button class="ghost-button" data-action="delete-reminder" data-job="${job.id}" data-id="${r.id}" type="button">Delete</button></div></div>`;
+}
+
+function noteFilter(job) {
+  const tagged = unique(job.notesActivity.flatMap((note) => note.mentions || []));
+  if (!tagged.length) return "";
+  return `<div class="note-filter"><span class="tiny">Tagged:</span>${tagged.map((name) => `<button class="tag-chip" data-action="filter-notes" data-job="${job.id}" data-user="${name}" type="button">@${name}</button>`).join("")}<button class="tag-chip" data-action="filter-notes" data-job="${job.id}" data-user="" type="button">All</button></div>`;
+}
+
+function noteDetail(job, note) {
+  if (job.noteFilter && !(note.mentions || []).includes(job.noteFilter)) return "";
+  return `<div class="list-row note-card"><div class="row-between"><strong>${note.author || "Team"}</strong>${pill(formatDateTime(note.timestamp), "blue")}</div><p>${highlightMentions(note.text)}</p>${(note.mentions || []).length ? `<div class="pill-row">${note.mentions.map((name) => pill("@" + name, "warn")).join("")}</div>` : ""}</div>`;
 }
 
 function subSummary(job) {
@@ -308,21 +365,57 @@ function renderSchedule() {
   view.innerHTML = `<section class="stack">${rows.map(({ job, item }) => {
     const header = item.date !== lastDate ? `<h2 class="date-group">${fmt(item.date)}</h2>` : "";
     lastDate = item.date;
-    return `${header}<article class="list-row"><div class="row-between"><div><strong>${item.trade}</strong><p class="subtle">${job.name} / ${item.subcontractor || "No sub"}</p></div>${pill(item.status || "Scheduled", item.status === "Needs materials" ? "warn" : "blue")}</div><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></article>`;
+    return `${header}<article class="list-row"><div class="row-between"><div><strong>${item.trade}</strong><p class="subtle">${job.name} / ${item.subcontractor || "No sub"}</p></div>${pill(item.status || "Scheduled", item.status === "Needs materials" ? "warn" : "blue")}</div><div class="row-actions"><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="schedule" data-id="${item.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></div></article>`;
   }).join("") || `<div class="empty">No scheduled work yet.</div>`}</section>`;
+}
+
+function renderCalendar() {
+  viewTitle.textContent = "Calendar";
+  const mode = sessionStorage.getItem("calendar.mode") || "today";
+  const events = filterCalendarEvents(buildCalendarEvents(), mode);
+  view.innerHTML = `
+    <section class="calendar-head section">
+      <div><h2>Internal Calendar</h2><p class="subtle">Local beta calendar for jobs, tasks, trades, work orders, reminders, and punch dates.</p></div>
+      <div class="segmented">
+        ${["today", "week", "month"].map((item) => `<button class="${mode === item ? "active" : ""}" data-action="calendar-mode" data-mode="${item}" type="button">${item[0].toUpperCase() + item.slice(1)}</button>`).join("")}
+      </div>
+    </section>
+    <section class="stack">${events.length ? groupedCalendar(events) : `<div class="empty">No calendar items yet.</div>`}</section>
+  `;
+}
+
+function groupedCalendar(events) {
+  let lastDate = "";
+  return events.map((event) => {
+    const header = event.date !== lastDate ? `<h2 class="date-group">${fmt(event.date)}</h2>` : "";
+    lastDate = event.date;
+    return `${header}${calendarCard(event)}`;
+  }).join("");
+}
+
+function calendarCard(event) {
+  return `<article class="calendar-card list-row">
+    <div class="row-between">
+      <div><strong>${event.title}</strong><p class="subtle">${event.job.name}${event.job.address ? " / " + event.job.address : ""}</p></div>
+      ${pill(event.type, event.tone || "blue")}
+    </div>
+    <p class="subtle">${event.time || "All day"} ${event.trade ? "/ " + event.trade : ""} ${event.assignedTo ? "/ " + event.assignedTo : ""} ${event.status ? "/ " + event.status : ""}</p>
+    ${event.notes ? `<p>${event.notes}</p>` : ""}
+    <div class="row-actions"><button class="secondary-button" data-action="open-job" data-id="${event.job.id}" type="button">Open job</button><button class="ghost-button" data-action="export-calendar" data-job="${event.job.id}" data-kind="${event.kind}" data-id="${event.sourceId}" type="button">Add to Phone Calendar</button></div>
+  </article>`;
 }
 
 function renderWorkOrders() {
   viewTitle.textContent = "Work Orders";
   const rows = state.jobs.flatMap((job) => job.workOrders.map((item) => ({ job, item }))).sort((a, b) => (a.item.date || "").localeCompare(b.item.date || ""));
-  view.innerHTML = `<section class="stack">${rows.map(({ job, item }) => `<article class="list-row"><strong>${item.trade} / ${job.name}</strong><p class="subtle">${fmt(item.date)} / ${item.subcontractor || "No sub"}</p><p>${item.scope || "No scope added."}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${item.id}" type="button">Print/export</button><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></div></article>`).join("") || `<div class="empty">No work orders yet.</div>`}</section>`;
+  view.innerHTML = `<section class="stack">${rows.map(({ job, item }) => `<article class="list-row"><strong>${item.trade} / ${job.name}</strong><p class="subtle">${fmt(item.date)} / ${item.subcontractor || "No sub"}</p><p>${item.scope || "No scope added."}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${item.id}" type="button">Print/export</button><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="work-order" data-id="${item.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></div></article>`).join("") || `<div class="empty">No work orders yet.</div>`}</section>`;
 }
 
 function renderSettings() {
   viewTitle.textContent = "Settings";
   view.innerHTML = `
     <section class="stack">
-      <article class="card"><h2>Company</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label></article>
+      <article class="card"><h2>Company</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></article>
       <article class="card"><h2>Lists</h2><label>Team members<textarea id="teamMembers" rows="4">${state.settings.teamMembers.join("\n")}</textarea></label><label>Trades<textarea id="trades" rows="6">${state.settings.trades.join("\n")}</textarea></label><label>Job statuses<textarea id="statuses" rows="7">${state.settings.statuses.join("\n")}</textarea></label><button class="primary-button" data-action="save-settings" type="button">Save settings</button></article>
       <article class="card"><h2>Backup</h2><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></article>
       <article class="card"><h2>Reset</h2><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></article>
@@ -362,10 +455,11 @@ function openJobForm(job = makeJob()) {
 function openItemForm(kind, jobId, itemId) {
   const job = findJob(jobId);
   const maps = {
-    task: { list: "tasks", title: "Task", fields: [["title", "Task title"], ["assignedTo", "Assigned to"], ["dueDate", "Due date", "date"], ["priority", "Priority", "select", ["Low", "Normal", "High"]], ["notes", "Notes", "textarea"]] },
-    schedule: { list: "schedule", title: "Schedule Item", fields: [["trade", "Trade", "select", state.settings.trades], ["subcontractor", "Subcontractor/contact"], ["date", "Scheduled date", "date"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
-    "work-order": { list: "workOrders", title: "Work Order", fields: [["trade", "Trade", "select", state.settings.trades], ["scope", "Scope of work", "textarea"], ["date", "Scheduled date", "date"], ["subcontractor", "Subcontractor/contact"], ["notes", "Notes", "textarea"]] },
-    punch: { list: "punchList", title: "Punch List Item", fields: [["title", "Item"], ["assignedTo", "Assigned to"]] },
+    task: { list: "tasks", title: "Task", fields: [["title", "Task title"], ["assignedTo", "Assigned to"], ["dueDate", "Due date", "date"], ["time", "Time", "time"], ["priority", "Priority", "select", ["Low", "Normal", "High"]], ["notes", "Notes", "textarea"]] },
+    schedule: { list: "schedule", title: "Schedule Item", fields: [["trade", "Trade", "select", state.settings.trades], ["subcontractor", "Subcontractor/contact"], ["date", "Scheduled date", "date"], ["time", "Time", "time"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
+    "work-order": { list: "workOrders", title: "Work Order", fields: [["trade", "Trade", "select", state.settings.trades], ["scope", "Scope of work", "textarea"], ["date", "Scheduled date", "date"], ["time", "Time", "time"], ["subcontractor", "Subcontractor/contact"], ["notes", "Notes", "textarea"]] },
+    punch: { list: "punchList", title: "Punch List Item", fields: [["title", "Item"], ["assignedTo", "Assigned to"], ["dueDate", "Due date", "date"], ["time", "Time", "time"], ["notes", "Notes", "textarea"]] },
+    reminder: { list: "reminders", title: "Reminder", fields: [["title", "Reminder title"], ["assignedTo", "Assigned to"], ["date", "Date", "date"], ["time", "Time", "time"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
     sub: { list: "subs", title: "Subcontractor / Trade", fields: [["trade", "Trade", "select", state.settings.trades], ["name", "Name/contact"], ["notes", "Notes", "textarea"]] }
   };
   const config = maps[kind];
@@ -389,6 +483,32 @@ function inputField(name, label, type = "text", choices = [], value = "") {
   if (type === "textarea") return `<label class="full">${label}<textarea name="${name}" rows="4">${value || ""}</textarea></label>`;
   if (type === "select") return `<label>${label}<select name="${name}">${options(choices, value)}</select></label>`;
   return `<label>${label}<input name="${name}" type="${type}" value="${value || ""}" /></label>`;
+}
+
+function openNoteForm(jobId) {
+  const job = findJob(jobId);
+  const form = document.createElement("form");
+  form.className = "form-grid";
+  form.innerHTML = `
+    <label>Author<select name="author">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label>
+    <label class="full">Note<textarea name="text" rows="5" placeholder="Type a note. Use @Seth, @Lynn, or @Rayson to tag someone."></textarea></label>
+    <p class="subtle full">Mentions are local beta notifications only. Real push notifications will require authentication, notification permissions, and a backend later.</p>
+    <div class="modal-actions split-actions full"><button class="ghost-button" data-action="close-modal" type="button">Cancel</button><button class="primary-button" type="submit">Save note</button></div>
+  `;
+  openModal("Add Note", form);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+    const mentions = extractMentions(data.text);
+    const note = { id: uid("note"), author: data.author, text: data.text, mentions, timestamp: new Date().toISOString() };
+    job.notesActivity.unshift(note);
+    log(job, `Note added by ${data.author || "Team"}`);
+    mentions.forEach((name) => {
+      state.notifications.unshift({ id: uid("mention"), type: "mention", taggedUser: name, jobId: job.id, noteId: note.id, timestamp: note.timestamp, read: false });
+    });
+    closeModal();
+    render();
+  });
 }
 
 function draftHomeownerUpdate(job) {
@@ -446,7 +566,12 @@ function handleAction(target) {
   const id = target.dataset.id;
   if (action === "close-modal") return closeModal();
   if (action === "add-job") return openJobForm();
+  if (action === "add-note") return openNoteForm(id);
   if (action === "open-job") { activeJobId = id; currentView = "detail"; return render(); }
+  if (action === "calendar-mode") { sessionStorage.setItem("calendar.mode", target.dataset.mode); return renderCalendar(); }
+  if (action === "export-calendar") return exportCalendarEvent(target.dataset.job, target.dataset.kind, id);
+  if (action === "filter-notes") { findJob(target.dataset.job).noteFilter = target.dataset.user; return render(); }
+  if (action === "mark-mention-read") { markMentionRead(id); return render(); }
   if (action === "edit-job") return openJobForm(job);
   if (action === "toggle-update") { job.homeownerUpdateNeeded = !job.homeownerUpdateNeeded; log(job, "Homeowner update flag changed"); return render(); }
   if (action === "draft-update") return draftHomeownerUpdate(job);
@@ -465,7 +590,7 @@ function handleAction(target) {
 }
 
 function deleteItem(kind, jobId, id) {
-  const map = { task: "tasks", schedule: "schedule", "work-order": "workOrders", punch: "punchList", sub: "subs" };
+  const map = { task: "tasks", schedule: "schedule", "work-order": "workOrders", punch: "punchList", reminder: "reminders", sub: "subs" };
   const job = findJob(jobId);
   if (!confirm("Delete this item?")) return;
   job[map[kind]] = job[map[kind]].filter((item) => item.id !== id);
@@ -484,6 +609,7 @@ function toggleItem(list, jobId, id, complete) {
 function saveSettings() {
   state.settings.companyName = document.querySelector("#companyName").value || "";
   state.settings.teamMembers = lines("#teamMembers");
+  state.settings.currentUser = document.querySelector("#currentUser").value || state.settings.teamMembers[0] || "";
   state.settings.trades = lines("#trades");
   state.settings.statuses = lines("#statuses");
   render();
@@ -501,6 +627,31 @@ function activeJobs() { return state.jobs.filter((job) => !["Complete", "Invoice
 function needsAttention(job) { return job.tasks.some((t) => !t.complete && t.dueDate < todayIso) || !job.startDate || openPunch(job).length || job.homeownerUpdateNeeded || job.materialsStatus === "Missing"; }
 function attentionPill(job) { return needsAttention(job) ? pill("Needs attention", "danger") : pill("On track", "good"); }
 function statusBadge(status) { return `<span class="status-badge">${status || "No status"}</span>`; }
+function unreadMentions() {
+  return state.notifications
+    .filter((item) => item.type === "mention" && !item.read && item.taggedUser === state.settings.currentUser)
+    .map((notification) => {
+      const job = findJob(notification.jobId);
+      const note = job?.notesActivity.find((entry) => entry.id === notification.noteId);
+      return job && note ? { notification, job, note } : null;
+    })
+    .filter(Boolean);
+}
+
+function markMentionRead(id) {
+  const notification = state.notifications.find((item) => item.id === id);
+  if (notification) notification.read = true;
+}
+
+function extractMentions(text) {
+  const names = new Set(state.settings.teamMembers);
+  return unique((text.match(/@[A-Za-z][A-Za-z0-9_-]*/g) || []).map((tag) => tag.slice(1)).filter((name) => names.has(name)));
+}
+
+function highlightMentions(text = "") {
+  return text.replace(/@([A-Za-z][A-Za-z0-9_-]*)/g, `<span class="mention">@$1</span>`);
+}
+
 function nextStep(job) {
   const overdue = job.tasks.find((taskItem) => !taskItem.complete && taskItem.dueDate && taskItem.dueDate < todayIso);
   if (overdue) return `Overdue task: ${overdue.title}`;
@@ -513,6 +664,100 @@ function nextStep(job) {
   if (openPunch(job).length) return "Complete open punch list items";
   return job.status || "Confirm next production step";
 }
+
+function buildCalendarEvents() {
+  return state.jobs.flatMap((job) => {
+    const events = [];
+    if (job.startDate) events.push(calendarEvent(job, "start", "Job Start", job.startDate, "", "Job Start", "", job.productionManager, job.status, job.notes));
+    if (job.targetDate) events.push(calendarEvent(job, "target", "Target Completion", job.targetDate, "", "Target", "", job.productionManager, job.status, job.notes));
+    if (job.homeownerUpdateNeeded) events.push(calendarEvent(job, "homeowner-update", "Homeowner Update Reminder", todayIso, "", "Reminder", "", job.productionManager, "Open", job.notes));
+    job.tasks.forEach((item) => item.dueDate && events.push(calendarEvent(job, "task", item.title, item.dueDate, item.time, "Task", "", item.assignedTo, item.priority, item.notes, item.id)));
+    job.schedule.forEach((item) => item.date && events.push(calendarEvent(job, "schedule", item.trade, item.date, item.time, "Schedule", item.trade, item.subcontractor, item.status, item.notes, item.id)));
+    job.workOrders.forEach((item) => item.date && events.push(calendarEvent(job, "work-order", item.trade, item.date, item.time, "Work Order", item.trade, item.subcontractor, "", `${item.scope || ""} ${item.notes || ""}`.trim(), item.id)));
+    job.punchList.forEach((item) => item.dueDate && events.push(calendarEvent(job, "punch", item.title, item.dueDate, item.time, "Punch List", "Punch list", item.assignedTo, item.complete ? "Complete" : "Open", item.notes, item.id)));
+    job.reminders.forEach((item) => item.date && events.push(calendarEvent(job, "reminder", item.title, item.date, item.time, "Reminder", "", item.assignedTo, item.status, item.notes, item.id)));
+    return events;
+  }).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+}
+
+function calendarEvent(job, kind, title, date, time, type, trade, assignedTo, status, notes, sourceId = kind) {
+  return { job, kind, sourceId, title, date, time, type, trade, assignedTo, status, notes, tone: type === "Reminder" ? "warn" : type === "Punch List" ? "danger" : "blue" };
+}
+
+function filterCalendarEvents(events, mode) {
+  const start = new Date(`${todayIso}T00:00:00`);
+  const end = new Date(start);
+  if (mode === "today") end.setDate(start.getDate() + 1);
+  if (mode === "week") end.setDate(start.getDate() + 7);
+  if (mode === "month") end.setMonth(start.getMonth() + 1);
+  return events.filter((event) => {
+    const eventDate = new Date(`${event.date}T00:00:00`);
+    return eventDate >= start && eventDate < end;
+  });
+}
+
+function exportCalendarEvent(jobId, kind, sourceId) {
+  const event = buildCalendarEvents().find((item) => item.job.id === jobId && item.kind === kind && item.sourceId === sourceId);
+  if (!event) return alert("This item needs a date before it can be exported.");
+  // True Apple/Google/Outlook calendar sync will require OAuth/API authentication and a backend service later.
+  const ics = makeIcs(event);
+  const blob = new Blob([ics], { type: "text/calendar" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${slug(event.job.name)}-${slug(event.title)}.ics`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function makeIcs(event) {
+  const start = icsDate(event.date, event.time);
+  const end = icsDate(event.date, addOneHour(event.time));
+  const description = [
+    `Job: ${event.job.name}`,
+    `Address: ${event.job.address || ""}`,
+    `Type: ${event.type}`,
+    `Trade/Sub: ${event.trade || event.assignedTo || ""}`,
+    `Status: ${event.status || ""}`,
+    `Notes: ${event.notes || ""}`,
+    `Related job phone: ${event.job.phone || ""}`,
+    `Related job email: ${event.job.email || ""}`
+  ].map(escapeIcs).join("\\n");
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//JobCommand//Internal Beta//EN",
+    "BEGIN:VEVENT",
+    `UID:${event.kind}-${event.sourceId}-${event.job.id}@jobcommand.local`,
+    `DTSTAMP:${icsDate(todayIso, "12:00")}`,
+    `DTSTART:${start}`,
+    `DTEND:${end}`,
+    `SUMMARY:${escapeIcs(`${event.title} - ${event.job.name}`)}`,
+    `LOCATION:${escapeIcs(event.job.address || "")}`,
+    `DESCRIPTION:${description}`,
+    "END:VEVENT",
+    "END:VCALENDAR"
+  ].join("\r\n");
+}
+
+function icsDate(date, time = "") {
+  const cleanTime = (time || "09:00").replace(":", "");
+  return `${date.replaceAll("-", "")}T${cleanTime}00`;
+}
+
+function addOneHour(time = "") {
+  if (!time) return "10:00";
+  const [hours, minutes] = time.split(":").map(Number);
+  return `${String((hours + 1) % 24).padStart(2, "0")}:${String(minutes || 0).padStart(2, "0")}`;
+}
+
+function escapeIcs(value = "") {
+  return String(value).replaceAll("\\", "\\\\").replaceAll(";", "\\;").replaceAll(",", "\\,").replaceAll("\n", "\\n");
+}
+
+function slug(value = "") {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "event";
+}
+
 function emptyState(message, buttonText = "") {
   return `<section class="empty-state">
     <div class="empty-mark"></div>
@@ -527,6 +772,7 @@ function selectHtml(id, items, selected) { return `<select id="${id}">${options(
 function unique(items) { return [...new Set(items)]; }
 function fmt(date) { return date ? new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Not set"; }
 function todayLabel() { return new Date(`${todayIso}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }); }
+function formatDateTime(value) { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
 function log(job, text) { job?.timeline?.unshift({ id: uid("log"), date: todayIso, text }); }
 function openModal(title, content) { modalTitle.textContent = title; modalBody.replaceChildren(content); modal.showModal(); }
 function closeModal() { modal.close(); modalBody.replaceChildren(); }
