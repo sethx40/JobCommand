@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#20342f" />
+    <title>Production CRM</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icons/icon.svg" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="companyLabel">Production CRM</p>
+          <h1 id="viewTitle">Today</h1>
+        </div>
+        <button class="icon-button" id="quickAddBtn" type="button" aria-label="Add job">+</button>
+      </header>
+
+      <main id="view" class="view" tabindex="-1"></main>
+
+      <nav class="bottom-nav" aria-label="Primary navigation">
+        <button class="nav-item active" data-view="today" type="button">
+          <span class="nav-icon">T</span>
+          <span>Today</span>
+        </button>
+        <button class="nav-item" data-view="jobs" type="button">
+          <span class="nav-icon">J</span>
+          <span>Jobs</span>
+        </button>
+        <button class="nav-item" data-view="schedule" type="button">
+          <span class="nav-icon">S</span>
+          <span>Schedule</span>
+        </button>
+        <button class="nav-item" data-view="workOrders" type="button">
+          <span class="nav-icon">W</span>
+          <span>Orders</span>
+        </button>
+        <button class="nav-item" data-view="settings" type="button">
+          <span class="nav-icon">G</span>
+          <span>Settings</span>
+        </button>
+      </nav>
+    </div>
+
+    <dialog id="modal" class="modal">
+      <div class="modal-card" id="modalCard">
+        <div class="modal-head">
+          <h2 id="modalTitle">Add</h2>
+          <button class="ghost-button" id="modalCloseBtn" type="button">Close</button>
+        </div>
+        <div id="modalBody"></div>
+      </div>
+    </dialog>
+
+    <template id="jobFormTemplate">
+      <div class="form-grid">
+        <label>Customer / Job name<input name="name" required /></label>
+        <label>Phone<input name="phone" type="tel" /></label>
+        <label>Email<input name="email" type="email" /></label>
+        <label>Job address<input name="address" /></label>
+        <label>Job type<input name="type" placeholder="Bathroom remodel, roof, water loss" /></label>
+        <label>Payment type
+          <select name="paymentType">
+            <option>Insurance</option>
+            <option>Self-pay</option>
+          </select>
+        </label>
+        <label>Sales rep<select name="salesRep"></select></label>
+        <label>Production manager<select name="productionManager"></select></label>
+        <label>Status<select name="status"></select></label>
+        <label>Start date<input name="startDate" type="date" /></label>
+        <label>Target completion<input name="targetDate" type="date" /></label>
+        <label>Materials status
+          <select name="materialsStatus">
+            <option>Not needed</option>
+            <option>Needed</option>
+            <option>Ordered</option>
+            <option>Delivered</option>
+            <option>Missing</option>
+          </select>
+        </label>
+        <label class="check-row"><input name="homeownerUpdateNeeded" type="checkbox" /> Homeowner update needed</label>
+        <label class="full">Notes<textarea name="notes" rows="4"></textarea></label>
+      </div>
+      <div class="modal-actions">
+        <button class="primary-button" type="submit">Save job</button>
+      </div>
+    </template>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "Contractor Production CRM",
+  "short_name": "Production CRM",
+  "description": "A mobile-first internal production command center for contractor job tracking.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f7f4ee",
+  "theme_color": "#20342f",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
