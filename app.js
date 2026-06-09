@@ -2,8 +2,8 @@ const STORE_KEY = "contractorProductionCrm.v1";
 const todayIso = new Date().toISOString().slice(0, 10);
 
 const defaults = {
-  companyName: "Production CRM",
-  teamMembers: ["Seth", "Boss", "Alex PM", "Morgan Sales"],
+  companyName: "",
+  teamMembers: [],
   trades: [
     "Roofing", "Gutters", "Plumbing rough-in", "Electrical rough-in", "HVAC",
     "Drywall", "Paint", "Tile", "Flooring", "Trim",
@@ -39,105 +39,39 @@ function addDays(days) {
 
 function loadState() {
   const saved = localStorage.getItem(STORE_KEY);
-  if (saved) return JSON.parse(saved);
-  const seeded = {
+  if (saved) return sanitizeState(JSON.parse(saved));
+  const fresh = {
     settings: { ...defaults },
-    jobs: seedJobs()
+    jobs: []
   };
-  localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
-  return seeded;
+  localStorage.setItem(STORE_KEY, JSON.stringify(fresh));
+  return fresh;
+}
+
+function sanitizeState(data) {
+  const clean = {
+    settings: { ...defaults, ...(data.settings || {}) },
+    jobs: Array.isArray(data.jobs) ? data.jobs.filter((job) => !isOldDemoJob(job)) : []
+  };
+  localStorage.setItem(STORE_KEY, JSON.stringify(clean));
+  return clean;
+}
+
+function isOldDemoJob(job) {
+  const oldPhonePattern = new RegExp(`^${["555", "010"].join("-")}[1-4]$`);
+  return oldPhonePattern.test(job.phone || "") && /@example\.com$/i.test(job.email || "");
 }
 
 function saveState() {
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
-  companyLabel.textContent = state.settings.companyName || "Production CRM";
-}
-
-function seedJobs() {
-  return [
-    makeJob({
-      name: "Smith Bathroom Remodel",
-      phone: "555-0101",
-      email: "smith@example.com",
-      address: "114 Maple Ridge Dr",
-      type: "Bathroom remodel",
-      paymentType: "Self-pay",
-      salesRep: "Morgan Sales",
-      productionManager: "Seth",
-      status: "In Progress",
-      startDate: todayIso,
-      targetDate: addDays(7),
-      materialsStatus: "Delivered",
-      homeownerUpdateNeeded: true,
-      notes: "Vanity set. Waiting on tile niche trim.",
-      tasks: [
-        task("Confirm plumber for trim-out", "Seth", todayIso, "High"),
-        task("Order missing niche trim", "Alex PM", addDays(-1), "High")
-      ],
-      schedule: [schedule("Tile", "Precision Tile / 555-1200", todayIso, "Scheduled")],
-      punchList: [punch("Touch up ceiling paint", "Paint sub", false)]
-    }),
-    makeJob({
-      name: "Johnson Roof Replacement",
-      phone: "555-0102",
-      email: "johnson@example.com",
-      address: "809 Oak Bend Ln",
-      type: "Roof replacement",
-      paymentType: "Insurance",
-      salesRep: "Morgan Sales",
-      productionManager: "Boss",
-      status: "Waiting on Sub",
-      startDate: addDays(3),
-      targetDate: addDays(5),
-      materialsStatus: "Ordered",
-      notes: "Check dumpster drop before crew arrival.",
-      tasks: [task("Lock crew date with roofing sub", "Boss", todayIso, "High")],
-      schedule: [schedule("Roofing", "Apex Roofing Crew / 555-2200", addDays(3), "Tentative")]
-    }),
-    makeJob({
-      name: "Miller Water Loss",
-      phone: "555-0103",
-      email: "miller@example.com",
-      address: "34 Cedar Hollow Ct",
-      type: "Water loss",
-      paymentType: "Insurance",
-      salesRep: "Seth",
-      productionManager: "Alex PM",
-      status: "Materials Needed",
-      startDate: addDays(1),
-      targetDate: addDays(10),
-      materialsStatus: "Missing",
-      homeownerUpdateNeeded: true,
-      notes: "Drywall and flooring selections pending.",
-      tasks: [task("Get flooring selection from homeowner", "Alex PM", addDays(-2), "Normal")],
-      schedule: [schedule("Drywall", "Level Line Drywall / 555-3300", addDays(2), "Needs materials")]
-    }),
-    makeJob({
-      name: "Davis Kitchen Repair",
-      phone: "555-0104",
-      email: "davis@example.com",
-      address: "611 Pine Market Rd",
-      type: "Kitchen repair",
-      paymentType: "Self-pay",
-      salesRep: "Morgan Sales",
-      productionManager: "Seth",
-      status: "Punch List",
-      startDate: addDays(-4),
-      targetDate: todayIso,
-      materialsStatus: "Delivered",
-      notes: "Final walkthrough ready after cabinet touch-up.",
-      tasks: [task("Schedule final walkthrough", "Seth", todayIso, "Normal")],
-      schedule: [schedule("Punch list", "In-house", todayIso, "Scheduled")],
-      punchList: [punch("Adjust cabinet door", "Trim sub", false), punch("Clean sink area", "Seth", true)]
-    })
-  ];
+  companyLabel.textContent = state.settings.companyName || "JobCommand";
 }
 
 function makeJob(data = {}) {
   return {
     id: uid("job"),
-    name: "", phone: "", email: "", address: "", type: "", paymentType: "Insurance",
-    salesRep: "Seth", productionManager: "Seth", status: "New Lead",
+    name: "", phone: "", email: "", address: "", type: "", paymentType: "",
+    salesRep: "", productionManager: "", status: "New Lead",
     startDate: "", targetDate: "", materialsStatus: "Not needed",
     homeownerUpdateNeeded: false, notes: "",
     tasks: [], schedule: [], subs: [], workOrders: [], punchList: [],
@@ -160,7 +94,7 @@ function punch(title, assignedTo, complete = false) {
 
 function render() {
   saveState();
-  companyLabel.textContent = state.settings.companyName;
+  companyLabel.textContent = state.settings.companyName || "JobCommand";
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === currentView);
   });
@@ -182,31 +116,46 @@ function renderToday() {
   const weekEnd = addDays(7);
   const dueToday = allTasks().filter(({ item }) => !item.complete && item.dueDate === todayIso);
   const overdue = allTasks().filter(({ item }) => !item.complete && item.dueDate && item.dueDate < todayIso);
+  const waitingOnSubs = jobs.filter((job) => job.status === "Waiting on Sub");
   const sections = [
     ["Jobs starting today", jobs.filter((job) => job.startDate === todayIso)],
     ["Jobs starting this week", jobs.filter((job) => job.startDate >= todayIso && job.startDate <= weekEnd)],
     ["Tasks due today", dueToday],
     ["Overdue tasks", overdue],
-    ["Jobs waiting on subs", jobs.filter((job) => job.status === "Waiting on Sub")],
+    ["Jobs waiting on subs", waitingOnSubs],
     ["Jobs missing materials", jobs.filter((job) => job.materialsStatus === "Missing" || job.status === "Materials Needed")],
     ["Jobs in punch list", jobs.filter((job) => openPunch(job).length || job.status === "Punch List")],
     ["Need homeowner update", jobs.filter((job) => job.homeownerUpdateNeeded)],
     ["Ready to invoice", jobs.filter((job) => job.status === "Complete")]
   ];
+  if (!jobs.length) {
+    view.innerHTML = `
+      ${commandHeader("JobCommand", todayLabel(), "What jobs need attention today, and what needs to happen next?")}
+      ${emptyState("No jobs need attention yet. Add your first job to start tracking production.", "Add Job")}
+    `;
+    return;
+  }
   view.innerHTML = `
-    <section class="hero-card section">
-      <h2>${attentionJobs().length} jobs need attention</h2>
-      <p>Focus on overdue tasks, missing materials, homeowner updates, subs, and open punch work.</p>
-      <button class="primary-button" data-action="add-job" type="button">Add Job</button>
-    </section>
+    ${commandHeader("JobCommand", todayLabel(), `${attentionJobs().length} jobs need attention today.`)}
     <section class="metric-grid section">
-      <div class="metric"><strong>${dueToday.length}</strong><span>Tasks due today</span></div>
-      <div class="metric"><strong>${overdue.length}</strong><span>Overdue tasks</span></div>
-      <div class="metric"><strong>${jobs.filter((j) => j.homeownerUpdateNeeded).length}</strong><span>Updates needed</span></div>
-      <div class="metric"><strong>${jobs.filter((j) => j.materialsStatus === "Missing").length}</strong><span>Missing materials</span></div>
+      <div class="metric"><strong>${activeJobs().length}</strong><span>Active Jobs</span></div>
+      <div class="metric attention"><strong>${attentionJobs().length}</strong><span>Need Attention</span></div>
+      <div class="metric"><strong>${dueToday.length}</strong><span>Due Today</span></div>
+      <div class="metric"><strong>${waitingOnSubs.length}</strong><span>Waiting on Subs</span></div>
     </section>
     ${sections.map(renderTodaySection).join("")}
   `;
+}
+
+function commandHeader(title, date, summary) {
+  return `<section class="command-header section">
+    <div>
+      <p class="eyebrow">${date}</p>
+      <h2>${title}</h2>
+      <p>${summary}</p>
+    </div>
+    <button class="primary-button compact-action" data-action="add-job" type="button">Add Job</button>
+  </section>`;
 }
 
 function renderTodaySection([title, items]) {
@@ -237,8 +186,13 @@ function renderJobs() {
   viewTitle.textContent = "Jobs";
   const filters = getFilters();
   const jobs = state.jobs.filter((job) => matchesFilters(job, filters));
+  if (!state.jobs.length) {
+    view.innerHTML = emptyState("No jobs yet. Add your first job to build your production board.", "Add Job");
+    return;
+  }
   view.innerHTML = `
-    <section class="toolbar">
+    <section class="toolbar board-toolbar">
+      <div><h2>Production Board</h2><p class="subtle">${jobs.length} of ${state.jobs.length} jobs shown</p></div>
       <button class="primary-button" data-action="add-job" type="button">Add Job</button>
     </section>
     <section class="filters">
@@ -284,11 +238,13 @@ function jobCard(job) {
   return `<article class="job-card">
     <div class="card-head">
       <div><button class="job-title" data-action="open-job" data-id="${job.id}" type="button">${job.name}</button>
-      <p class="subtle">${job.address || "No address"} / ${job.type || "No type"}</p></div>
-      ${attentionPill(job)}
+      <p class="subtle">${job.type || "No type"} / ${job.address || "No address"}</p></div>
+      ${statusBadge(job.status)}
     </div>
+    <p class="next-step"><strong>Next:</strong> ${nextStep(job)}</p>
     <select class="quick-status" data-action="status" data-id="${job.id}">${state.settings.statuses.map((s) => `<option ${s === job.status ? "selected" : ""}>${s}</option>`).join("")}</select>
-    <div class="pill-row">${pill(job.productionManager || "No PM")}${pill(job.salesRep || "No sales")}${job.startDate ? pill(fmt(job.startDate), "blue") : pill("Missing schedule", "warn")}${job.materialsStatus === "Missing" ? pill("Missing materials", "danger") : pill(job.materialsStatus)}</div>
+    <div class="job-meta"><span>PM: ${job.productionManager || "Unassigned"}</span><span>Sales: ${job.salesRep || "Unassigned"}</span></div>
+    <div class="pill-row">${attentionPill(job)}${job.startDate ? pill(fmt(job.startDate), "blue") : pill("Missing schedule", "warn")}${job.materialsStatus === "Missing" ? pill("Missing materials", "danger") : pill(job.materialsStatus)}</div>
   </article>`;
 }
 
@@ -353,13 +309,13 @@ function renderSchedule() {
     const header = item.date !== lastDate ? `<h2 class="date-group">${fmt(item.date)}</h2>` : "";
     lastDate = item.date;
     return `${header}<article class="list-row"><div class="row-between"><div><strong>${item.trade}</strong><p class="subtle">${job.name} / ${item.subcontractor || "No sub"}</p></div>${pill(item.status || "Scheduled", item.status === "Needs materials" ? "warn" : "blue")}</div><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></article>`;
-  }).join("") || `<div class="empty">No schedule items yet.</div>`}</section>`;
+  }).join("") || `<div class="empty">No scheduled work yet.</div>`}</section>`;
 }
 
 function renderWorkOrders() {
   viewTitle.textContent = "Work Orders";
   const rows = state.jobs.flatMap((job) => job.workOrders.map((item) => ({ job, item }))).sort((a, b) => (a.item.date || "").localeCompare(b.item.date || ""));
-  view.innerHTML = `<section class="stack">${rows.map(({ job, item }) => `<article class="list-row"><strong>${item.trade} / ${job.name}</strong><p class="subtle">${fmt(item.date)} / ${item.subcontractor || "No sub"}</p><p>${item.scope || "No scope added."}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${item.id}" type="button">Print/export</button><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></div></article>`).join("") || `<div class="empty">Create work orders from a job detail screen.</div>`}</section>`;
+  view.innerHTML = `<section class="stack">${rows.map(({ job, item }) => `<article class="list-row"><strong>${item.trade} / ${job.name}</strong><p class="subtle">${fmt(item.date)} / ${item.subcontractor || "No sub"}</p><p>${item.scope || "No scope added."}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${item.id}" type="button">Print/export</button><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></div></article>`).join("") || `<div class="empty">No work orders yet.</div>`}</section>`;
 }
 
 function renderSettings() {
@@ -484,10 +440,11 @@ function exportBackup() {
 }
 
 function handleAction(target) {
-  const action = target.dataset.action;
+  const action = target?.dataset?.action;
   if (!action) return;
   const job = findJob(target.dataset.job || target.dataset.id);
   const id = target.dataset.id;
+  if (action === "close-modal") return closeModal();
   if (action === "add-job") return openJobForm();
   if (action === "open-job") { activeJobId = id; currentView = "detail"; return render(); }
   if (action === "edit-job") return openJobForm(job);
@@ -525,7 +482,7 @@ function toggleItem(list, jobId, id, complete) {
 }
 
 function saveSettings() {
-  state.settings.companyName = document.querySelector("#companyName").value || "Production CRM";
+  state.settings.companyName = document.querySelector("#companyName").value || "";
   state.settings.teamMembers = lines("#teamMembers");
   state.settings.trades = lines("#trades");
   state.settings.statuses = lines("#statuses");
@@ -540,14 +497,36 @@ function findJob(id) { return state.jobs.find((job) => job.id === id); }
 function allTasks() { return state.jobs.flatMap((job) => job.tasks.map((item) => ({ job, item }))); }
 function openPunch(job) { return job.punchList.filter((item) => !item.complete); }
 function attentionJobs() { return state.jobs.filter((job) => needsAttention(job)); }
+function activeJobs() { return state.jobs.filter((job) => !["Complete", "Invoiced", "Paid"].includes(job.status)); }
 function needsAttention(job) { return job.tasks.some((t) => !t.complete && t.dueDate < todayIso) || !job.startDate || openPunch(job).length || job.homeownerUpdateNeeded || job.materialsStatus === "Missing"; }
 function attentionPill(job) { return needsAttention(job) ? pill("Needs attention", "danger") : pill("On track", "good"); }
+function statusBadge(status) { return `<span class="status-badge">${status || "No status"}</span>`; }
+function nextStep(job) {
+  const overdue = job.tasks.find((taskItem) => !taskItem.complete && taskItem.dueDate && taskItem.dueDate < todayIso);
+  if (overdue) return `Overdue task: ${overdue.title}`;
+  const due = job.tasks.find((taskItem) => !taskItem.complete && taskItem.dueDate === todayIso);
+  if (due) return `Task due today: ${due.title}`;
+  if (job.materialsStatus === "Missing") return "Resolve missing materials";
+  if (job.homeownerUpdateNeeded) return "Send homeowner update";
+  const nextSchedule = job.schedule.filter((item) => !item.date || item.date >= todayIso).sort((a, b) => (a.date || "").localeCompare(b.date || ""))[0];
+  if (nextSchedule) return `${nextSchedule.trade} scheduled ${fmt(nextSchedule.date)}`;
+  if (openPunch(job).length) return "Complete open punch list items";
+  return job.status || "Confirm next production step";
+}
+function emptyState(message, buttonText = "") {
+  return `<section class="empty-state">
+    <div class="empty-mark"></div>
+    <h2>${message}</h2>
+    ${buttonText ? `<button class="primary-button" data-action="add-job" type="button">${buttonText}</button>` : ""}
+  </section>`;
+}
 function pill(text, tone = "") { return `<span class="pill ${tone}">${text}</span>`; }
 function field(label, value) { return `<div class="field"><span>${label}</span><strong>${value || "Not set"}</strong></div>`; }
 function options(items, selected) { return items.map((item) => `<option ${item === selected ? "selected" : ""}>${item}</option>`).join(""); }
 function selectHtml(id, items, selected) { return `<select id="${id}">${options(items, selected)}</select>`; }
 function unique(items) { return [...new Set(items)]; }
 function fmt(date) { return date ? new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Not set"; }
+function todayLabel() { return new Date(`${todayIso}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }); }
 function log(job, text) { job?.timeline?.unshift({ id: uid("log"), date: todayIso, text }); }
 function openModal(title, content) { modalTitle.textContent = title; modalBody.replaceChildren(content); modal.showModal(); }
 function closeModal() { modal.close(); modalBody.replaceChildren(); }

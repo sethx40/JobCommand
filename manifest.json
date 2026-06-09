@@ -1,7 +1,7 @@
 {
-  "name": "Contractor Production CRM",
-  "short_name": "Production CRM",
-  "description": "A mobile-first internal production command center for contractor job tracking.",
+  "name": "JobCommand",
+  "short_name": "JobCommand",
+  "description": "A mobile-first production command center for contractor job tracking.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#f7f4ee",
