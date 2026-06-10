@@ -41,6 +41,7 @@ let activeJobId = null;
 const view = document.querySelector("#view");
 const viewTitle = document.querySelector("#viewTitle");
 const companyLabel = document.querySelector("#companyLabel");
+const headerMeta = document.querySelector("#headerMeta");
 const modal = document.querySelector("#modal");
 const modalTitle = document.querySelector("#modalTitle");
 const modalBody = document.querySelector("#modalBody");
@@ -125,7 +126,17 @@ function saveState() {
   todayIso = getAppTodayIso();
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   companyLabel.textContent = state.settings.companyName || "JobCommand";
+  updateHeaderMeta();
   if (cloudReady) scheduleCloudSave();
+}
+
+function updateHeaderMeta() {
+  if (!headerMeta) return;
+  const user = state.settings.currentUser || profile?.full_name || "Team";
+  const active = state.jobs?.filter((job) => !["Complete", "Invoiced", "Paid"].includes(job.status)).length || 0;
+  const attention = state.jobs?.filter((job) => needsAttention(job)).length || 0;
+  const mentions = unreadMentions().length;
+  headerMeta.textContent = `${user} / ${active} active / ${attention} attention / ${mentions} mentions`;
 }
 
 async function boot() {
@@ -200,6 +211,7 @@ async function initSupabaseClient() {
 
 function renderSetupRequired() {
   viewTitle.textContent = "Setup";
+  if (headerMeta) headerMeta.textContent = "Connect Supabase to continue";
   view.innerHTML = `<section class="auth-card">
     <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
     <h2>Supabase setup required</h2>
@@ -212,6 +224,7 @@ function renderError(title, error, action = "") {
   const message = error?.message || String(error || "Unknown error");
   viewTitle.textContent = "Setup Error";
   companyLabel.textContent = "JobCommand";
+  if (headerMeta) headerMeta.textContent = "Setup needs attention";
   view.innerHTML = `<section class="auth-card error-card">
     <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
     <h2>${escapeHtml(title)}</h2>
@@ -227,6 +240,7 @@ function renderError(title, error, action = "") {
 function renderLogin() {
   viewTitle.textContent = "Login";
   companyLabel.textContent = "JobCommand";
+  if (headerMeta) headerMeta.textContent = "Sign in to shared workspace";
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.remove("active"));
   if (session?.user) {
     renderSignedInSetupBlocked();
@@ -526,7 +540,7 @@ function render() {
   saveState();
   companyLabel.textContent = state.settings.companyName || "JobCommand";
   document.querySelectorAll(".nav-item").forEach((button) => {
-    button.classList.toggle("active", button.dataset.view === currentView);
+    button.classList.toggle("active", button.dataset.view === currentView || (currentView === "schedule" && button.dataset.view === "calendar"));
   });
   const routes = {
     today: renderToday,
@@ -885,7 +899,10 @@ function renderCalendar() {
       <div class="calendar-viewbar">
         ${["day", "week", "month"].map((mode) => `<button class="${calendarMode === mode ? "active" : ""}" data-action="calendar-view" data-mode="${mode}" type="button">${mode[0].toUpperCase() + mode.slice(1)}</button>`).join("")}
       </div>
-      <button class="secondary-button" data-action="calendar-today" type="button">Today</button>
+      <div class="calendar-tools">
+        <button class="secondary-button" data-action="calendar-today" type="button">Today</button>
+        <button class="ghost-button" data-action="open-schedule-list" type="button">Schedule List</button>
+      </div>
     </section>
     ${modeContent}
     <section class="selected-date-panel">
@@ -961,7 +978,7 @@ function calendarCard(event) {
 }
 
 function renderWorkOrders() {
-  viewTitle.textContent = "Work Orders";
+  viewTitle.textContent = "W.O.s";
   const rows = state.jobs.flatMap((job) => job.workOrders.map((item) => ({ job, item }))).sort((a, b) => (a.item.date || "").localeCompare(b.item.date || ""));
   view.innerHTML = `<section class="stack">${rows.map(({ job, item }) => `<article class="list-row"><strong>${item.trade} / ${job.name}</strong><p class="subtle">${fmt(item.date)} / ${item.subcontractor || "No sub"}</p><p>${item.scope || "No scope added."}</p><div class="row-actions"><button class="secondary-button" data-action="print-work-order" data-job="${job.id}" data-id="${item.id}" type="button">Print/export</button><button class="secondary-button" data-action="export-calendar" data-job="${job.id}" data-kind="work-order" data-id="${item.id}" type="button">Export Calendar Event</button><button class="ghost-button" data-action="open-job" data-id="${job.id}" type="button">Open job</button></div></article>`).join("") || `<div class="empty">No work orders yet.</div>`}</section>`;
 }
@@ -996,6 +1013,9 @@ function openJobForm(job = makeJob()) {
   const template = document.querySelector("#jobFormTemplate").content.cloneNode(true);
   const form = document.createElement("form");
   form.append(template);
+  const clientInput = form.querySelector("[name=name]");
+  clientInput.setAttribute("list", "clientContacts");
+  form.insertAdjacentHTML("beforeend", datalistHtml("clientContacts", contactsByType(["Client", "Other"])));
   form.querySelector("[name=salesRep]").innerHTML = options(state.settings.teamMembers, job.salesRep);
   form.querySelector("[name=productionManager]").innerHTML = options(state.settings.teamMembers, job.productionManager);
   form.querySelector("[name=status]").innerHTML = options(state.settings.statuses, job.status);
@@ -1004,6 +1024,14 @@ function openJobForm(job = makeJob()) {
     if (!input) return;
     if (input.type === "checkbox") input.checked = Boolean(value);
     else input.value = value || "";
+  });
+  clientInput.addEventListener("change", () => {
+    const contact = contactByName(clientInput.value, ["Client", "Other"]);
+    if (!contact) return;
+    fillIfBlank(form, "phone", contact.phone);
+    fillIfBlank(form, "email", contact.email);
+    fillIfBlank(form, "address", contact.address);
+    fillIfBlank(form, "notes", contact.notes);
   });
   openModal(job.id && findJob(job.id) ? "Edit Job" : "Add Job", form);
   form.addEventListener("submit", (event) => {
@@ -1090,18 +1118,26 @@ function upsertClientContact(job) {
 function openItemForm(kind, jobId, itemId) {
   const job = findJob(jobId);
   const maps = {
-    task: { list: "tasks", title: "Task", fields: [["title", "Task title"], ["assignedTo", "Assigned to"], ["dueDate", "Due date", "date"], ["time", "Time", "time"], ["priority", "Priority", "select", ["Low", "Normal", "High"]], ["notes", "Notes", "textarea"]] },
-    schedule: { list: "schedule", title: "Schedule Item", fields: [["trade", "Trade", "select", state.settings.trades], ["subcontractor", "Subcontractor/contact"], ["date", "Scheduled date", "date"], ["time", "Time", "time"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
-    "work-order": { list: "workOrders", title: "Work Order", fields: [["trade", "Trade", "select", state.settings.trades], ["scope", "Scope of work", "textarea"], ["date", "Scheduled date", "date"], ["time", "Time", "time"], ["subcontractor", "Subcontractor/contact"], ["notes", "Notes", "textarea"]] },
-    punch: { list: "punchList", title: "Punch List Item", fields: [["title", "Item"], ["assignedTo", "Assigned to"], ["dueDate", "Due date", "date"], ["time", "Time", "time"], ["notes", "Notes", "textarea"]] },
-    reminder: { list: "reminders", title: "Reminder", fields: [["title", "Reminder title"], ["assignedTo", "Assigned to"], ["date", "Date", "date"], ["time", "Time", "time"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
-    sub: { list: "subs", title: "Subcontractor / Trade", fields: [["trade", "Trade", "select", state.settings.trades], ["name", "Name/contact"], ["notes", "Notes", "textarea"]] }
+    task: { list: "tasks", title: "Task", fields: [["title", "Task title"], ["assignedTo", "Assigned to", "teamContact"], ["dueDate", "Due date", "date"], ["time", "Time", "time"], ["priority", "Priority", "select", ["Low", "Normal", "High"]], ["notes", "Notes", "textarea"]] },
+    schedule: { list: "schedule", title: "Schedule Item", fields: [["trade", "Trade", "select", state.settings.trades], ["subcontractor", "Subcontractor/contact", "contact"], ["date", "Scheduled date", "date"], ["time", "Time", "time"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
+    "work-order": { list: "workOrders", title: "Work Order", fields: [["trade", "Trade", "select", state.settings.trades], ["scope", "Scope of work", "textarea"], ["date", "Scheduled date", "date"], ["time", "Time", "time"], ["subcontractor", "Subcontractor/contact", "contact"], ["notes", "Notes", "textarea"]] },
+    punch: { list: "punchList", title: "Punch List Item", fields: [["title", "Item"], ["assignedTo", "Assigned to", "teamContact"], ["dueDate", "Due date", "date"], ["time", "Time", "time"], ["notes", "Notes", "textarea"]] },
+    reminder: { list: "reminders", title: "Reminder", fields: [["title", "Reminder title"], ["assignedTo", "Assigned to", "teamContact"], ["date", "Date", "date"], ["time", "Time", "time"], ["status", "Status"], ["notes", "Notes", "textarea"]] },
+    sub: { list: "subs", title: "Subcontractor / Trade", fields: [["trade", "Trade", "select", state.settings.trades], ["name", "Name/contact", "contact"], ["notes", "Notes", "textarea"]] }
   };
   const config = maps[kind];
   const item = itemId ? job[config.list].find((x) => x.id === itemId) : {};
   const form = document.createElement("form");
   form.className = "form-grid";
   form.innerHTML = config.fields.map(([name, label, type, choices]) => inputField(name, label, type, choices, item[name])).join("") + `<div class="modal-actions full"><button class="primary-button" type="submit">Save ${config.title.toLowerCase()}</button></div>`;
+  form.querySelectorAll("[data-contact-field]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const contact = contactByName(input.value, ["Subcontractor", "Team", "Other"]);
+      if (!contact) return;
+      fillIfBlank(form, "trade", contact.trade);
+      fillIfBlank(form, "notes", contact.notes);
+    });
+  });
   openModal(itemId ? `Edit ${config.title}` : `Add ${config.title}`, form);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1125,10 +1161,52 @@ function upsertSubContact(data) {
   else state.contacts.unshift(makeContact(contactData));
 }
 
+function contactsByType(types = []) {
+  const allowed = new Set(types);
+  return (state.contacts || []).filter((contact) => !types.length || allowed.has(contact.contactType));
+}
+
+function teamContactOptions() {
+  const teamContacts = contactsByType(["Team"]);
+  const contactNames = new Set(teamContacts.map((contact) => contact.name));
+  const listItems = teamContacts.map((contact) => ({ ...contact }));
+  state.settings.teamMembers.forEach((name) => {
+    if (!contactNames.has(name)) listItems.push({ name, contactType: "Team" });
+  });
+  return listItems;
+}
+
+function contactByName(name, types = []) {
+  const cleanName = (name || "").trim().toLowerCase();
+  if (!cleanName) return null;
+  return contactsByType(types).find((contact) => (contact.name || "").trim().toLowerCase() === cleanName) || null;
+}
+
+function datalistHtml(id, contacts = []) {
+  return `<datalist id="${id}">${contacts.map((contact) => {
+    const label = [contact.contactType, contact.trade, contact.phone, contact.companyName].filter(Boolean).join(" / ");
+    return `<option value="${escapeHtml(contact.name || "")}" label="${escapeHtml(label)}"></option>`;
+  }).join("")}</datalist>`;
+}
+
+function fillIfBlank(form, name, value) {
+  const field = form.querySelector(`[name="${name}"]`);
+  if (!field || !value || field.value) return;
+  field.value = value;
+}
+
 function inputField(name, label, type = "text", choices = [], value = "") {
-  if (type === "textarea") return `<label class="full">${label}<textarea name="${name}" rows="4">${value || ""}</textarea></label>`;
+  if (type === "textarea") return `<label class="full">${label}<textarea name="${name}" rows="4">${escapeHtml(value || "")}</textarea></label>`;
   if (type === "select") return `<label>${label}<select name="${name}">${options(choices, value)}</select></label>`;
-  return `<label>${label}<input name="${name}" type="${type}" value="${value || ""}" /></label>`;
+  if (type === "contact") {
+    const listId = `contact-${name}-${uid("list")}`;
+    return `<label>${label}<input name="${name}" data-contact-field="true" list="${listId}" value="${escapeHtml(value || "")}" placeholder="Start typing a saved contact" />${datalistHtml(listId, contactsByType(["Subcontractor", "Other"]))}</label>`;
+  }
+  if (type === "teamContact") {
+    const listId = `team-${name}-${uid("list")}`;
+    return `<label>${label}<input name="${name}" list="${listId}" value="${escapeHtml(value || "")}" placeholder="Start typing a team member" />${datalistHtml(listId, teamContactOptions())}</label>`;
+  }
+  return `<label>${label}<input name="${name}" type="${type}" value="${escapeHtml(value || "")}" /></label>`;
 }
 
 function openNoteForm(jobId) {
@@ -1242,6 +1320,7 @@ function handleAction(target) {
   if (action === "open-job") { activeJobId = id; currentView = "detail"; return render(); }
   if (action === "calendar-mode") { sessionStorage.setItem("calendar.mode", target.dataset.mode); return renderCalendar(); }
   if (action === "calendar-view") { sessionStorage.setItem("calendar.view", target.dataset.mode); return renderCalendar(); }
+  if (action === "open-schedule-list") { currentView = "schedule"; return render(); }
   if (action === "calendar-prev") { shiftCalendar(-1); return renderCalendar(); }
   if (action === "calendar-next") { shiftCalendar(1); return renderCalendar(); }
   if (action === "calendar-today") { calendarCursor = new Date(`${todayIso}T12:00:00`); selectedCalendarDate = todayIso; return renderCalendar(); }
@@ -1612,7 +1691,7 @@ document.addEventListener("input", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260609-2318");
+  navigator.serviceWorker.register("./service-worker.js?v=20260609-2342");
 }
 
 boot();

@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcommand-v11-contacts-calendar";
+const CACHE_NAME = "jobcommand-v12-nav-contact-autofill";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
