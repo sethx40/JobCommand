@@ -1,5 +1,5 @@
 const STORE_KEY = "contractorProductionCrm.v1";
-const todayIso = new Date().toISOString().slice(0, 10);
+let todayIso = localDateInputValue(new Date());
 let SUPABASE_URL = "";
 let SUPABASE_ANON_KEY = "";
 let DEFAULT_COMPANY_NAME = "JobCommand Beta";
@@ -19,6 +19,8 @@ let authStatus = null;
 const defaults = {
   companyName: "",
   currentUser: "Seth",
+  appDate: "",
+  appTime: "",
   teamMembers: ["Seth", "Lynn"],
   trades: [
     "Roofing", "Gutters", "Plumbing rough-in", "Electrical rough-in", "HVAC",
@@ -103,6 +105,7 @@ function isOldDemoJob(job) {
 }
 
 function saveState() {
+  todayIso = getAppTodayIso();
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   companyLabel.textContent = state.settings.companyName || "JobCommand";
   if (cloudReady) scheduleCloudSave();
@@ -753,24 +756,28 @@ function renderSchedule() {
 
 function renderCalendar() {
   viewTitle.textContent = "Calendar";
+  const calendarMode = sessionStorage.getItem("calendar.view") || "month";
   const events = buildCalendarEvents();
   const monthEvents = events.filter((event) => event.date?.startsWith(monthKey(calendarCursor)));
   const selectedEvents = events.filter((event) => event.date === selectedCalendarDate);
   view.innerHTML = `
     <section class="calendar-head section">
-      <div><h2>${calendarCursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p class="subtle">Jobs, tasks, trades, work orders, reminders, inspections, and custom events.</p></div>
-      <div class="calendar-controls">
-        <button class="ghost-button" data-action="calendar-prev" type="button">Prev</button>
-        <button class="secondary-button" data-action="calendar-today" type="button">Today</button>
-        <button class="ghost-button" data-action="calendar-next" type="button">Next</button>
+      <div class="calendar-titlebar">
+        <button class="calendar-arrow" data-action="calendar-prev" type="button" aria-label="Previous month">‹</button>
+        <div><h2>${calendarCursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p class="subtle">Jobs, tasks, trades, work orders, reminders, inspections, and custom events.</p></div>
+        <button class="calendar-arrow" data-action="calendar-next" type="button" aria-label="Next month">›</button>
       </div>
+      <div class="calendar-viewbar">
+        ${["day", "week", "month", "agenda"].map((mode) => `<button class="${calendarMode === mode ? "active" : ""}" data-action="calendar-view" data-mode="${mode}" type="button">${mode[0].toUpperCase() + mode.slice(1)}</button>`).join("")}
+      </div>
+      <button class="secondary-button" data-action="calendar-today" type="button">Today</button>
     </section>
     <section class="calendar-grid-card section">
       <div class="calendar-weekdays">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<span>${day}</span>`).join("")}</div>
       <div class="calendar-grid">${monthCells(calendarCursor, monthEvents)}</div>
     </section>
-    <section class="toolbar board-toolbar">
-      <div><h2>${fmt(selectedCalendarDate)}</h2><p class="subtle">${selectedEvents.length} event${selectedEvents.length === 1 ? "" : "s"} selected</p></div>
+    <section class="selected-date-panel">
+      <div><p class="eyebrow">Selected Date</p><h2>${fmt(selectedCalendarDate)}</h2><p class="subtle">${selectedEvents.length} event${selectedEvents.length === 1 ? "" : "s"} selected</p></div>
       <button class="primary-button" data-action="add-calendar-event" type="button">Add Calendar Event</button>
     </section>
     <section class="stack">${selectedEvents.length ? selectedEvents.map(calendarCard).join("") : `<div class="empty">No calendar items for this date.</div>`}</section>
@@ -817,12 +824,17 @@ function renderWorkOrders() {
 function renderSettings() {
   viewTitle.textContent = "Settings";
   view.innerHTML = `
-    <section class="stack">
-      <article class="card"><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><button class="ghost-button" data-action="logout" type="button">Log out</button></article>
-      <article class="card"><h2>Company</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></article>
-      <article class="card"><h2>Lists</h2><label>Team members<textarea id="teamMembers" rows="4">${state.settings.teamMembers.join("\n")}</textarea></label><label>Trades<textarea id="trades" rows="6">${state.settings.trades.join("\n")}</textarea></label><label>Job statuses<textarea id="statuses" rows="7">${state.settings.statuses.join("\n")}</textarea></label><button class="primary-button" data-action="save-settings" type="button">Save settings</button></article>
-      <article class="card"><h2>Backup & Migration</h2><p class="subtle">Use export for a backup. Use import to bring an old localStorage backup into the active Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON to Workspace</button></div></article>
-      <article class="card"><h2>Reset</h2><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></article>
+    <section class="settings-hero section">
+      <div><p class="eyebrow">Workspace Controls</p><h2>Settings</h2><p>Manage account, beta team, production lists, app date, and backups.</p></div>
+      <button class="primary-button compact-action" data-action="save-settings" type="button">Save</button>
+    </section>
+    <section class="settings-grid">
+      <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><button class="ghost-button" data-action="logout" type="button">Log out</button></div></article>
+      <article class="settings-card"><div class="settings-icon">W</div><div class="settings-fields"><h2>Workspace</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></div></article>
+      <article class="settings-card"><div class="settings-icon">T</div><div class="settings-fields"><h2>App Date & Time</h2><p class="subtle">Use this for field testing or when your device/browser date is off.</p><label>App date<input id="appDate" type="date" value="${state.settings.appDate || localDateInputValue(new Date())}"></label><label>App time<input id="appTime" type="time" value="${state.settings.appTime || localTimeInputValue(new Date())}"></label><button class="ghost-button" data-action="clear-app-date" type="button">Use device date/time</button></div></article>
+      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><label>Team members<textarea id="teamMembers" rows="4">${state.settings.teamMembers.join("\n")}</textarea></label><label>Trades<textarea id="trades" rows="6">${state.settings.trades.join("\n")}</textarea></label><label>Job statuses<textarea id="statuses" rows="7">${state.settings.statuses.join("\n")}</textarea></label></div></article>
+      <article class="settings-card"><div class="settings-icon">B</div><div><h2>Backup & Migration</h2><p class="subtle">Export a backup or import an old localStorage backup into this Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></div></article>
+      <article class="settings-card danger-zone"><div class="settings-icon">!</div><div><h2>Danger Zone</h2><p class="subtle">Clear shared data for this workspace.</p><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></div></article>
     </section>
   `;
 }
@@ -995,6 +1007,7 @@ function handleAction(target) {
   if (action === "add-note") return openNoteForm(id);
   if (action === "open-job") { activeJobId = id; currentView = "detail"; return render(); }
   if (action === "calendar-mode") { sessionStorage.setItem("calendar.mode", target.dataset.mode); return renderCalendar(); }
+  if (action === "calendar-view") { sessionStorage.setItem("calendar.view", target.dataset.mode); return renderCalendar(); }
   if (action === "calendar-prev") { calendarCursor.setMonth(calendarCursor.getMonth() - 1); return renderCalendar(); }
   if (action === "calendar-next") { calendarCursor.setMonth(calendarCursor.getMonth() + 1); return renderCalendar(); }
   if (action === "calendar-today") { calendarCursor = new Date(`${todayIso}T12:00:00`); selectedCalendarDate = todayIso; return renderCalendar(); }
@@ -1015,6 +1028,12 @@ function handleAction(target) {
   if (action === "complete-task") return toggleItem("tasks", target.dataset.job, id, true);
   if (action === "print-work-order") return printWorkOrder(findJob(target.dataset.job), findJob(target.dataset.job).workOrders.find((w) => w.id === id));
   if (action === "save-settings") return saveSettings();
+  if (action === "clear-app-date") {
+    state.settings.appDate = "";
+    state.settings.appTime = "";
+    todayIso = getAppTodayIso();
+    return render();
+  }
   if (action === "retry-boot") return boot();
   if (action === "test-supabase") return testSupabaseConnection();
   if (action === "logout") return supabase ? supabase.auth.signOut() : renderLogin();
@@ -1055,6 +1074,9 @@ function saveSettings() {
   state.settings.companyName = document.querySelector("#companyName").value || "";
   state.settings.teamMembers = lines("#teamMembers");
   state.settings.currentUser = document.querySelector("#currentUser").value || state.settings.teamMembers[0] || "";
+  state.settings.appDate = document.querySelector("#appDate")?.value || "";
+  state.settings.appTime = document.querySelector("#appTime")?.value || "";
+  todayIso = getAppTodayIso();
   state.settings.trades = lines("#trades");
   state.settings.statuses = lines("#statuses");
   render();
@@ -1286,6 +1308,15 @@ function unique(items) { return [...new Set(items)]; }
 function fmt(date) { return date ? new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Not set"; }
 function todayLabel() { return new Date(`${todayIso}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }); }
 function formatDateTime(value) { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
+function localDateInputValue(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function localTimeInputValue(date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+function getAppTodayIso() {
+  return state?.settings?.appDate || localDateInputValue(new Date());
+}
 function log(job, text) { job?.timeline?.unshift({ id: uid("log"), date: todayIso, text }); }
 function openModal(title, content) { modalTitle.textContent = title; modalBody.replaceChildren(content); modal.showModal(); }
 function closeModal() { modal.close(); modalBody.replaceChildren(); }
@@ -1304,7 +1335,7 @@ document.addEventListener("input", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260609-2152");
+  navigator.serviceWorker.register("./service-worker.js?v=20260609-2224");
 }
 
 boot();

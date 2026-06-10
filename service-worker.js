@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcommand-v9-debug-nostale";
+const CACHE_NAME = "jobcommand-v10-ui-polish";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
