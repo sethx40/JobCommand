@@ -1035,8 +1035,8 @@ function renderSettings() {
     <section class="settings-grid">
       <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><div class="row-actions"><button class="secondary-button" data-action="edit-my-contact" type="button">Edit my contact card</button><button class="ghost-button" data-action="logout" type="button">Log out</button></div></div></article>
       <article class="settings-card"><div class="settings-icon">W</div><div class="settings-fields"><h2>Workspace</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></div></article>
-      <article class="settings-card"><div class="settings-icon">T</div><div class="settings-fields"><h2>App Date & Time</h2><p class="subtle">Use this for field testing or when your device/browser date is off.</p><label>App date<input id="appDate" type="date" value="${state.settings.appDate || localDateInputValue(new Date())}"></label><label>App time<input id="appTime" type="time" value="${state.settings.appTime || localTimeInputValue(new Date())}"></label><button class="ghost-button" data-action="clear-app-date" type="button">Use device date/time</button></div></article>
       <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><p class="subtle">Add or remove the values used in job forms and filters.</p>${settingsListEditor("teamMembers", "Team members", state.settings.teamMembers, "Add team member")}${settingsListEditor("trades", "Trades", state.settings.trades, "Add trade")}${settingsListEditor("statuses", "Job statuses", state.settings.statuses, "Add status")}</div></article>
+      <article class="settings-card"><div class="settings-icon">T</div><div class="settings-fields"><h2>App Date & Time</h2><p class="subtle">Use this for field testing or when your device/browser date is off.</p><label>App date<input id="appDate" type="date" value="${state.settings.appDate || localDateInputValue(new Date())}"></label><label>App time<input id="appTime" type="time" value="${state.settings.appTime || localTimeInputValue(new Date())}"></label><button class="ghost-button" data-action="clear-app-date" type="button">Use device date/time</button></div></article>
       <article class="settings-card"><div class="settings-icon">B</div><div><h2>Backup & Migration</h2><p class="subtle">Export a backup or import an old localStorage backup into this Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></div></article>
       <article class="settings-card danger-zone"><div class="settings-icon">!</div><div><h2>Danger Zone</h2><p class="subtle">Clear shared data for this workspace.</p><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></div></article>
     </section>
@@ -1777,7 +1777,7 @@ document.addEventListener("change", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260610-0120");
+  navigator.serviceWorker.register("./service-worker.js?v=20260610-0128");
 }
 
 boot();
