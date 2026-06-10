@@ -5,7 +5,7 @@ const todayIso = new Date().toISOString().slice(0, 10);
 const SUPABASE_URL = SupabaseConfig.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = SupabaseConfig.SUPABASE_ANON_KEY || SupabaseConfig.SUPABASE_PUBLISHABLE_KEY || "";
 const DEFAULT_COMPANY_NAME = SupabaseConfig.DEFAULT_COMPANY_NAME || "JobCommand Beta";
-const isSupabaseConfigured = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.length > 30;
+const isSupabaseConfigured = isValidSupabaseUrl(SUPABASE_URL) && isLikelyAnonKey(SUPABASE_ANON_KEY);
 let supabase = null;
 let session = null;
 let profile = null;
@@ -15,6 +15,8 @@ let cloudReady = false;
 let saveTimer = null;
 let calendarCursor = new Date(`${todayIso}T12:00:00`);
 let selectedCalendarDate = todayIso;
+let supabaseInitError = null;
+let authStatus = null;
 
 const defaults = {
   companyName: "",
@@ -111,13 +113,11 @@ async function boot() {
       return;
     }
     if (!supabase) {
-      const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
-      supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      supabase.auth.onAuthStateChange((_event, nextSession) => {
-        session = nextSession;
-        cloudReady = false;
-        boot().catch((error) => renderError("Auth state error", error));
-      });
+      await initSupabaseClient();
+    }
+    if (!supabase) {
+      renderLogin();
+      return;
     }
     const { data, error } = await supabase.auth.getSession();
     if (error) throw error;
@@ -129,7 +129,33 @@ async function boot() {
     await loadWorkspace();
     render();
   } catch (error) {
-    renderError("JobCommand could not start", error);
+    authStatus = { ok: false, title: "Startup failed", error };
+    renderLogin();
+  }
+}
+
+async function initSupabaseClient() {
+  try {
+    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
+    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false
+      }
+    });
+    supabaseInitError = null;
+    if (!window.jobCommandAuthListener) {
+      supabase.auth.onAuthStateChange((_event, nextSession) => {
+        session = nextSession;
+        cloudReady = false;
+        boot().catch((error) => renderError("Auth state error", error));
+      });
+      window.jobCommandAuthListener = true;
+    }
+  } catch (error) {
+    supabaseInitError = error;
+    supabase = null;
   }
 }
 
@@ -138,7 +164,8 @@ function renderSetupRequired() {
   view.innerHTML = `<section class="auth-card">
     <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
     <h2>Supabase setup required</h2>
-    <p class="subtle">Paste your Supabase project URL and anon public key into <strong>supabase-config.js</strong>, then upload the app to GitHub Pages.</p>
+    <p class="subtle">Paste your Supabase project URL and anon/public publishable key into <strong>supabase-config.js</strong>, then upload the app to GitHub Pages.</p>
+    ${supabaseDiagnosticsCard()}
   </section>`;
 }
 
@@ -166,18 +193,51 @@ function renderLogin() {
     <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
     <h2>Sign in to JobCommand</h2>
     <p class="subtle">Use the beta account created in Supabase for Seth or Lynn.</p>
+    ${supabaseDiagnosticsCard()}
     <form id="loginForm" class="form-grid">
       <label>Email<input name="email" type="email" required autocomplete="email" /></label>
       <label>Password<input name="password" type="password" required autocomplete="current-password" /></label>
       <button class="primary-button full" type="submit">Log in</button>
     </form>
+    <button class="secondary-button" data-action="test-supabase" type="button">Test Supabase Connection</button>
+    <div id="authStatus">${authStatusMarkup()}</div>
   </section>`;
   document.querySelector("#loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = Object.fromEntries(new FormData(event.currentTarget).entries());
-    const { error } = await supabase.auth.signInWithPassword(form);
-    if (error) alert(error.message);
+    authStatus = { ok: null, title: "Signing in", message: "Contacting Supabase Auth..." };
+    renderLogin();
+    try {
+      if (!supabase) await initSupabaseClient();
+      if (!supabase) throw supabaseInitError || new Error("Supabase client did not initialize.");
+      const { error } = await supabase.auth.signInWithPassword(form);
+      if (error) throw error;
+      authStatus = { ok: true, title: "Login successful", message: "Loading shared workspace..." };
+      await boot();
+    } catch (error) {
+      authStatus = { ok: false, title: "Login failed", error };
+      renderLogin();
+    }
   });
+}
+
+function supabaseDiagnosticsCard() {
+  const urlValid = isValidSupabaseUrl(SUPABASE_URL);
+  return `<div class="diagnostics-card">
+    <div class="diag-row"><span>Supabase URL</span><strong>${escapeHtml(SUPABASE_URL || "Missing")}</strong></div>
+    <div class="diag-row"><span>URL looks valid</span><strong>${urlValid ? "Yes" : "No"}</strong></div>
+    <div class="diag-row"><span>Anon key present</span><strong>${SUPABASE_ANON_KEY ? "Yes, " + maskKey(SUPABASE_ANON_KEY) : "No"}</strong></div>
+    <div class="diag-row"><span>Anon key looks valid</span><strong>${isLikelyAnonKey(SUPABASE_ANON_KEY) ? "Yes" : "No"}</strong></div>
+    <div class="diag-row"><span>Client initialized</span><strong>${supabase ? "Yes" : "No"}</strong></div>
+    ${supabaseInitError ? `<p class="diag-error">${escapeHtml(errorSummary(supabaseInitError))}</p>` : ""}
+  </div>`;
+}
+
+function authStatusMarkup() {
+  if (!authStatus) return "";
+  const tone = authStatus.ok === true ? "success" : authStatus.ok === false ? "error" : "pending";
+  const message = authStatus.error ? errorSummary(authStatus.error) : authStatus.message;
+  return `<div class="auth-status ${tone}"><strong>${escapeHtml(authStatus.title)}</strong><p>${escapeHtml(message || "")}</p></div>`;
 }
 
 async function loadWorkspace() {
@@ -317,6 +377,35 @@ async function replaceChildren(table, rows) {
 
 function memberIdByName(name) {
   return workspaceMembers.find((member) => (member.profiles?.full_name || member.profiles?.email?.split("@")[0]) === name)?.user_id || profile.id;
+}
+
+async function testSupabaseConnection() {
+  authStatus = { ok: null, title: "Testing Supabase", message: "Checking config, client, and Auth endpoint..." };
+  renderLogin();
+  try {
+    if (!isSupabaseConfigured) throw new Error("Supabase URL or anon key is missing or malformed.");
+    if (!supabase) await initSupabaseClient();
+    if (!supabase) throw supabaseInitError || new Error("Supabase client failed to initialize.");
+    const authSettingsUrl = `${trimSlash(SUPABASE_URL)}/auth/v1/settings`;
+    const response = await fetch(authSettingsUrl, {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`
+      },
+      cache: "no-store"
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Auth settings request failed: HTTP ${response.status} ${response.statusText}. ${text.slice(0, 240)}`);
+    }
+    const { error } = await supabase.auth.getSession();
+    if (error) throw error;
+    authStatus = { ok: true, title: "Supabase connection works", message: `Reached ${authSettingsUrl}. Client initialized and auth session check completed.` };
+  } catch (error) {
+    authStatus = { ok: false, title: "Supabase connection failed", error };
+  }
+  renderLogin();
 }
 
 function makeJob(data = {}) {
@@ -880,6 +969,7 @@ function handleAction(target) {
   if (action === "print-work-order") return printWorkOrder(findJob(target.dataset.job), findJob(target.dataset.job).workOrders.find((w) => w.id === id));
   if (action === "save-settings") return saveSettings();
   if (action === "retry-boot") return boot();
+  if (action === "test-supabase") return testSupabaseConnection();
   if (action === "logout") return supabase ? supabase.auth.signOut() : renderLogin();
   if (action === "export") return exportBackup();
   if (action === "import") return openImport();
@@ -1087,6 +1177,38 @@ function escapeHtml(value = "") {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function errorSummary(error) {
+  if (!error) return "Unknown error";
+  const parts = [
+    error.name ? `name=${error.name}` : "",
+    error.status ? `status=${error.status}` : "",
+    error.message || String(error)
+  ].filter(Boolean);
+  return parts.join(" / ");
+}
+
+function maskKey(key = "") {
+  if (!key) return "missing";
+  return `${key.slice(0, 8)}...${key.slice(-4)} (${key.length} chars)`;
+}
+
+function trimSlash(value = "") {
+  return value.replace(/\/+$/, "");
+}
+
+function isValidSupabaseUrl(value = "") {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.endsWith(".supabase.co");
+  } catch {
+    return false;
+  }
+}
+
+function isLikelyAnonKey(value = "") {
+  return Boolean(value) && value.length > 30 && !value.startsWith("http://") && !value.startsWith("https://") && !value.includes(".supabase.co");
 }
 
 function monthKey(date) {
