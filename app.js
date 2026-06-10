@@ -18,12 +18,19 @@ let authStatus = null;
 let settingsNotice = null;
 let settingsNoticeTimer = null;
 
+const ROLE_OPTIONS = [
+  ["admin", "Admin"],
+  ["production_manager", "Production Manager"],
+  ["team_member", "Team Member"]
+];
+
 const defaults = {
   companyName: "",
   currentUser: "Seth",
   appDate: "",
   appTime: "",
   teamMembers: ["Seth", "Lynn"],
+  memberRoles: { Seth: "admin", Lynn: "production_manager" },
   trades: [
     "Roofing", "Gutters", "Plumbing rough-in", "Electrical rough-in", "HVAC",
     "Drywall", "Paint", "Tile", "Flooring", "Trim",
@@ -78,14 +85,26 @@ function loadState() {
 }
 
 function sanitizeState(data) {
+  const settings = sanitizeSettings(data.settings || {});
   const clean = {
-    settings: { ...defaults, ...(data.settings || {}) },
+    settings,
     jobs: Array.isArray(data.jobs) ? data.jobs.filter((job) => !isOldDemoJob(job)).map(normalizeJob) : [],
     calendarEvents: Array.isArray(data.calendarEvents) ? data.calendarEvents : [],
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
     contacts: Array.isArray(data.contacts) ? data.contacts.map(normalizeContact) : []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(clean));
+  return clean;
+}
+
+function sanitizeSettings(settings = {}) {
+  const clean = { ...defaults, ...settings };
+  clean.teamMembers = unique((Array.isArray(clean.teamMembers) ? clean.teamMembers : defaults.teamMembers).map((name) => String(name).trim()).filter(Boolean));
+  clean.memberRoles = { ...(defaults.memberRoles || {}), ...(clean.memberRoles || {}) };
+  clean.teamMembers.forEach((name) => {
+    if (!clean.memberRoles[name]) clean.memberRoles[name] = "team_member";
+  });
+  if (!clean.currentUser || !clean.teamMembers.includes(clean.currentUser)) clean.currentUser = clean.teamMembers[0] || "";
   return clean;
 }
 
@@ -354,7 +373,7 @@ async function loadCloudState() {
   const companyId = company.id;
   const [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes, contactsRes] = await Promise.all([
     supabase.from("settings").select("*").eq("company_id", companyId).maybeSingle(),
-    supabase.from("company_members").select("user_id, profiles(full_name, email)").eq("company_id", companyId),
+    supabase.from("company_members").select("user_id, role, profiles(full_name, email)").eq("company_id", companyId),
     supabase.from("jobs").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
     supabase.from("tasks").select("*").eq("company_id", companyId),
     supabase.from("schedule_items").select("*").eq("company_id", companyId),
@@ -368,10 +387,22 @@ async function loadCloudState() {
   ]);
   const failed = [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes, contactsRes].find((result) => result.error);
   if (failed) throw new Error(`Data fetch failed: ${failed.error.message}`);
-  const teamMembers = membersRes.data?.map((m) => m.profiles?.full_name || m.profiles?.email?.split("@")[0]).filter(Boolean) || ["Seth", "Lynn"];
   workspaceMembers = membersRes.data || [];
+  const settingsData = settingsRes.data?.data || {};
+  const cloudMembers = membersRes.data?.map((m) => m.profiles?.full_name || m.profiles?.email?.split("@")[0]).filter(Boolean) || [];
+  const savedMembers = Array.isArray(settingsData.teamMembers) ? settingsData.teamMembers : [];
+  const teamMembers = unique([...savedMembers, ...cloudMembers, ...defaults.teamMembers].map((name) => String(name).trim()).filter(Boolean));
+  const cloudRoles = {};
+  (membersRes.data || []).forEach((member) => {
+    const name = member.profiles?.full_name || member.profiles?.email?.split("@")[0];
+    if (name) cloudRoles[name] = normalizeRole(member.role);
+  });
+  const memberRoles = { ...defaults.memberRoles, ...(settingsData.memberRoles || {}), ...cloudRoles };
+  teamMembers.forEach((name) => {
+    if (!memberRoles[name]) memberRoles[name] = "team_member";
+  });
   state = {
-    settings: { ...defaults, ...(settingsRes.data?.data || {}), companyName: company.name, currentUser: profile.full_name, teamMembers },
+    settings: sanitizeSettings({ ...defaults, ...settingsData, companyName: company.name, currentUser: profile.full_name, teamMembers, memberRoles }),
     jobs: (jobsRes.data || []).map((row) => cloudJob(row, tasksRes.data || [], scheduleRes.data || [], workOrdersRes.data || [], punchRes.data || [], notesRes.data || [], mentionsRes.data || [], calendarRes.data || [])),
     calendarEvents: (calendarRes.data || []).filter((item) => !item.job_id).map(cloudStandaloneEvent),
     notifications: (notificationsRes.data || []).map(cloudNotification),
@@ -444,6 +475,11 @@ async function saveCloudState() {
     company.name = state.settings.companyName;
   }
   await supabase.from("settings").upsert({ company_id: companyId, data: state.settings }, { onConflict: "company_id" });
+  await Promise.all((workspaceMembers || []).map((member) => {
+    const name = member.profiles?.full_name || member.profiles?.email?.split("@")[0];
+    const role = normalizeRole(state.settings.memberRoles?.[name] || member.role || "team_member");
+    return supabase.from("company_members").update({ role }).eq("company_id", companyId).eq("user_id", member.user_id);
+  }));
   await supabase.from("jobs").upsert(state.jobs.map((job) => ({
     id: job.id,
     company_id: companyId,
@@ -718,7 +754,7 @@ function renderTeamBreakdown(jobs) {
     const salesJobs = jobs.filter((job) => job.salesRep === member && job.productionManager !== member);
     const dueTasks = jobs.flatMap((job) => job.tasks.filter((taskItem) => taskItem.assignedTo === member && !taskItem.complete).map((taskItem) => ({ job, taskItem })));
     return `<article class="team-card">
-      <div class="row-between"><div><h2>${escapeHtml(member)}</h2><p class="subtle">${pmJobs.length} PM jobs / ${salesJobs.length} sales jobs / ${dueTasks.length} open tasks</p></div>${pill(`${pmJobs.length + salesJobs.length} jobs`, pmJobs.length ? "blue" : "")}</div>
+      <div class="row-between"><div><h2>${escapeHtml(member)}</h2><p class="subtle">${roleLabel(getMemberRole(member))} / ${pmJobs.length} PM jobs / ${salesJobs.length} sales jobs / ${dueTasks.length} open tasks</p></div>${pill(`${pmJobs.length + salesJobs.length} jobs`, pmJobs.length ? "blue" : "")}</div>
       <div class="team-lane"><h3>Project Manager</h3>${pmJobs.length ? pmJobs.map(teamJobRow).join("") : `<div class="empty compact-empty">No PM jobs.</div>`}</div>
       <div class="team-lane"><h3>Sales / Assist</h3>${salesJobs.length ? salesJobs.map(teamJobRow).join("") : `<div class="empty compact-empty">No sales jobs.</div>`}</div>
     </article>`;
@@ -1027,18 +1063,20 @@ function renderWorkOrders() {
 
 function renderSettings() {
   viewTitle.textContent = "Settings";
+  const canAdmin = hasAdminControls();
   view.innerHTML = `
     <section class="settings-hero section">
       <div><p class="eyebrow">Workspace Controls</p><h2>Settings</h2><p>Manage account, beta team, production lists, app date, and backups.</p>${settingsNoticeMarkup()}</div>
-      <button class="primary-button compact-action" data-action="save-settings" type="button">Save Changes</button>
+      <button class="primary-button compact-action" data-action="save-settings" type="button">${canAdmin ? "Save Changes" : "Save My Settings"}</button>
     </section>
     <section class="settings-grid">
-      <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><div class="row-actions"><button class="secondary-button" data-action="edit-my-contact" type="button">Edit my contact card</button><button class="ghost-button" data-action="logout" type="button">Log out</button></div></div></article>
-      <article class="settings-card"><div class="settings-icon">W</div><div class="settings-fields"><h2>Workspace</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></div></article>
-      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><p class="subtle">Add or remove the values used in job forms and filters.</p>${settingsListEditor("teamMembers", "Team members", state.settings.teamMembers, "Add team member")}${settingsListEditor("trades", "Trades", state.settings.trades, "Add trade")}${settingsListEditor("statuses", "Job statuses", state.settings.statuses, "Add status")}</div></article>
+      <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><div class="pill-row">${pill(roleLabel(getMemberRole(state.settings.currentUser)), "blue")}</div><div class="row-actions"><button class="secondary-button" data-action="edit-my-contact" type="button">Edit my contact card</button><button class="ghost-button" data-action="logout" type="button">Log out</button></div></div></article>
+      <article class="settings-card"><div class="settings-icon">W</div><div class="settings-fields"><h2>Workspace</h2><label>Company name<input id="companyName" value="${escapeHtml(state.settings.companyName)}" ${canAdmin ? "" : "disabled"}></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></div></article>
+      <article class="settings-card wide"><div class="settings-icon">R</div><div class="settings-fields"><h2>Team & Access</h2><p class="subtle">Assign who can run workspace settings, manage production, or update assigned work.</p>${teamMembersEditor(canAdmin)}${permissionsSummary()}</div></article>
+      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><p class="subtle">Admin-editable dropdown values used in job forms and filters.</p>${settingsListEditor("trades", "Trades", state.settings.trades, "Add trade", canAdmin)}${settingsListEditor("statuses", "Job statuses", state.settings.statuses, "Add status", canAdmin)}</div></article>
       <article class="settings-card"><div class="settings-icon">T</div><div class="settings-fields"><h2>App Date & Time</h2><p class="subtle">Use this for field testing or when your device/browser date is off.</p><label>App date<input id="appDate" type="date" value="${state.settings.appDate || localDateInputValue(new Date())}"></label><label>App time<input id="appTime" type="time" value="${state.settings.appTime || localTimeInputValue(new Date())}"></label><button class="ghost-button" data-action="clear-app-date" type="button">Use device date/time</button></div></article>
-      <article class="settings-card"><div class="settings-icon">B</div><div><h2>Backup & Migration</h2><p class="subtle">Export a backup or import an old localStorage backup into this Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></div></article>
-      <article class="settings-card danger-zone"><div class="settings-icon">!</div><div><h2>Danger Zone</h2><p class="subtle">Clear shared data for this workspace.</p><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></div></article>
+      <article class="settings-card"><div class="settings-icon">B</div><div><h2>Backup & Migration</h2><p class="subtle">Export a backup or import an old localStorage backup into this Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button" ${canAdmin ? "" : "disabled"}>Import backup JSON</button></div></div></article>
+      <article class="settings-card danger-zone"><div class="settings-icon">!</div><div><h2>Danger Zone</h2><p class="subtle">Clear shared data for this workspace.</p><button class="danger-button" data-action="clear-data" type="button" ${canAdmin ? "" : "disabled"}>Clear all data</button></div></article>
     </section>
   `;
   document.querySelectorAll(".inline-add input").forEach((input) => {
@@ -1058,11 +1096,32 @@ function listEditor(listName, title, items, placeholder) {
   </div>`;
 }
 
-function settingsListEditor(listName, title, items, placeholder) {
+function settingsListEditor(listName, title, items, placeholder, canEdit = true) {
   return `<div class="editable-list" data-list="${listName}">
     <div class="row-between"><h3>${title}</h3><span class="tiny">${items.length} saved</span></div>
-    <div class="editable-list-rows">${items.map((item, index) => `<div class="editable-list-row"><span><strong>${escapeHtml(item)}</strong><small>${escapeHtml(title)} item ${index + 1}</small></span><button class="ghost-button mini-button" data-action="remove-list-item" data-list="${listName}" data-value="${encodeURIComponent(item)}" type="button" aria-label="Remove ${escapeHtml(item)}">Remove</button></div>`).join("") || `<div class="empty compact-empty">No ${title.toLowerCase()} saved yet.</div>`}</div>
-    <div class="inline-add"><input id="${listName}Input" placeholder="${placeholder}" /><button class="secondary-button" data-action="add-list-item" data-list="${listName}" type="button">Add Item</button></div>
+    <div class="editable-list-rows">${items.map((item, index) => `<div class="editable-list-row"><span><strong>${escapeHtml(item)}</strong><small>${escapeHtml(title)} item ${index + 1}</small></span><button class="ghost-button mini-button" data-action="remove-list-item" data-list="${listName}" data-value="${encodeURIComponent(item)}" type="button" aria-label="Remove ${escapeHtml(item)}" ${canEdit ? "" : "disabled"}>Remove</button></div>`).join("") || `<div class="empty compact-empty">No ${title.toLowerCase()} saved yet.</div>`}</div>
+    <div class="inline-add"><input id="${listName}Input" placeholder="${placeholder}" ${canEdit ? "" : "disabled"} /><button class="secondary-button" data-action="add-list-item" data-list="${listName}" type="button" ${canEdit ? "" : "disabled"}>Add Item</button></div>
+  </div>`;
+}
+
+function teamMembersEditor(canEdit = true) {
+  const members = state.settings.teamMembers || [];
+  return `<div class="editable-list team-access-list" data-list="teamMembers">
+    <div class="row-between"><h3>Team members</h3><span class="tiny">${members.length} saved</span></div>
+    <div class="editable-list-rows">${members.map((member) => `<div class="editable-list-row team-role-row">
+      <span><strong>${escapeHtml(member)}</strong><small>${escapeHtml(roleLabel(getMemberRole(member)))}</small></span>
+      <select class="role-select" data-action="set-member-role" data-member="${encodeURIComponent(member)}" ${canEdit ? "" : "disabled"}>${ROLE_OPTIONS.map(([value, label]) => `<option value="${value}" ${getMemberRole(member) === value ? "selected" : ""}>${label}</option>`).join("")}</select>
+      <button class="ghost-button mini-button" data-action="remove-list-item" data-list="teamMembers" data-value="${encodeURIComponent(member)}" type="button" aria-label="Remove ${escapeHtml(member)}" ${canEdit ? "" : "disabled"}>Remove</button>
+    </div>`).join("") || `<div class="empty compact-empty">No team members saved yet.</div>`}</div>
+    <div class="inline-add"><input id="teamMembersInput" placeholder="Add team member" ${canEdit ? "" : "disabled"} /><button class="secondary-button" data-action="add-list-item" data-list="teamMembers" type="button" ${canEdit ? "" : "disabled"}>Add Team Member</button></div>
+  </div>`;
+}
+
+function permissionsSummary() {
+  return `<div class="permissions-grid">
+    <div><strong>Admin</strong><span>Settings, roles, imports, backups, and all production data.</span></div>
+    <div><strong>Production Manager</strong><span>Jobs, schedules, work orders, contacts, notes, and team workload.</span></div>
+    <div><strong>Team Member</strong><span>Assigned work, notes, task updates, and calendar visibility.</span></div>
   </div>`;
 }
 
@@ -1184,6 +1243,15 @@ function upsertClientContact(job) {
   };
   if (match) Object.assign(match, data);
   else state.contacts.unshift(makeContact(data));
+}
+
+function upsertTeamContact(name) {
+  if (!name) return;
+  state.contacts = state.contacts || [];
+  const match = state.contacts.find((contact) => contact.contactType === "Team" && contact.name === name);
+  const contactData = { name, contactType: "Team", notes: roleLabel(getMemberRole(name)) };
+  if (match) Object.assign(match, { ...contactData, email: match.email, phone: match.phone, address: match.address });
+  else state.contacts.unshift(makeContact(contactData));
 }
 
 function openItemForm(kind, jobId, itemId) {
@@ -1417,6 +1485,7 @@ function handleAction(target) {
   if (action === "save-settings") return saveSettings();
   if (action === "add-list-item") return addListItem(target.dataset.list);
   if (action === "remove-list-item") return removeListItem(target.dataset.list, target.dataset.value);
+  if (action === "set-member-role") return setMemberRole(target.dataset.member, target.value);
   if (action === "clear-app-date") {
     state.settings.appDate = "";
     state.settings.appTime = "";
@@ -1461,13 +1530,16 @@ function toggleItem(list, jobId, id, complete) {
 }
 
 function saveSettings() {
-  state.settings.companyName = document.querySelector("#companyName").value || "";
-  state.settings.currentUser = document.querySelector("#currentUser").value || state.settings.teamMembers[0] || "";
+  capturePendingListInputs();
+  state.settings.companyName = document.querySelector("#companyName")?.value || state.settings.companyName || "";
+  state.settings.currentUser = document.querySelector("#currentUser")?.value || state.settings.teamMembers[0] || "";
   state.settings.appDate = document.querySelector("#appDate")?.value || "";
   state.settings.appTime = document.querySelector("#appTime")?.value || "";
+  state.settings = sanitizeSettings(state.settings);
   todayIso = getAppTodayIso();
   showSettingsNotice("Settings saved and queued for sync.", "success", "Saved");
-  render();
+  saveState();
+  renderSettings();
 }
 
 function lines(selector) {
@@ -1478,13 +1550,12 @@ function addListItem(listName) {
   const input = document.querySelector(`#${listName}Input`);
   const value = input?.value?.trim();
   if (!value || !Array.isArray(state.settings[listName])) return;
-  if (!state.settings[listName].includes(value)) {
-    state.settings[listName].push(value);
+  if (addSettingsListValue(listName, value)) {
     showSettingsNotice(`${value} added.`, "success", "Added");
   } else {
     showSettingsNotice(`${value} is already in this list.`, "warn", "No Change");
   }
-  if (listName === "teamMembers" && !state.settings.currentUser) state.settings.currentUser = value;
+  if (input) input.value = "";
   saveState();
   renderSettings();
 }
@@ -1493,8 +1564,48 @@ function removeListItem(listName, encodedValue) {
   const value = decodeURIComponent(encodedValue || "");
   if (!value || !Array.isArray(state.settings[listName])) return;
   state.settings[listName] = state.settings[listName].filter((item) => item !== value);
+  if (listName === "teamMembers") delete state.settings.memberRoles[value];
   if (listName === "teamMembers" && state.settings.currentUser === value) state.settings.currentUser = state.settings.teamMembers[0] || "";
   showSettingsNotice(`${value} removed.`, "success", "Removed");
+  saveState();
+  renderSettings();
+}
+
+function capturePendingListInputs() {
+  ["teamMembers", "trades", "statuses"].forEach((listName) => {
+    const input = document.querySelector(`#${listName}Input`);
+    const value = input?.value?.trim();
+    if (!value) return;
+    addSettingsListValue(listName, value);
+    input.value = "";
+  });
+}
+
+function addSettingsListValue(listName, value) {
+  if (!value || !Array.isArray(state.settings[listName])) return false;
+  const exists = state.settings[listName].some((item) => item.toLowerCase() === value.toLowerCase());
+  if (exists) return false;
+  state.settings[listName].push(value);
+  if (listName === "teamMembers") {
+    state.settings.memberRoles = state.settings.memberRoles || {};
+    state.settings.memberRoles[value] = "team_member";
+    if (!state.settings.currentUser) state.settings.currentUser = value;
+    upsertTeamContact(value);
+  }
+  state.settings = sanitizeSettings(state.settings);
+  return true;
+}
+
+function setMemberRole(encodedMember, role) {
+  if (!hasAdminControls()) {
+    showSettingsNotice("Only admins can change team access levels.", "warn", "Admin Only");
+    return renderSettings();
+  }
+  const member = decodeURIComponent(encodedMember || "");
+  if (!member) return;
+  state.settings.memberRoles = state.settings.memberRoles || {};
+  state.settings.memberRoles[member] = normalizeRole(role);
+  showSettingsNotice(`${member} is now ${roleLabel(role)}.`, "success", "Access Updated");
   saveState();
   renderSettings();
 }
@@ -1738,6 +1849,20 @@ function emptyState(message, buttonText = "") {
     ${buttonText ? `<button class="primary-button" data-action="add-job" type="button">${buttonText}</button>` : ""}
   </section>`;
 }
+function normalizeRole(role = "") {
+  if (role === "owner") return "admin";
+  if (role === "member") return "team_member";
+  return ROLE_OPTIONS.some(([value]) => value === role) ? role : "team_member";
+}
+function roleLabel(role = "") {
+  return ROLE_OPTIONS.find(([value]) => value === normalizeRole(role))?.[1] || "Team Member";
+}
+function getMemberRole(member = "") {
+  return normalizeRole(state.settings?.memberRoles?.[member] || (member === state.settings?.currentUser ? "admin" : "team_member"));
+}
+function hasAdminControls() {
+  return getMemberRole(state.settings?.currentUser) === "admin";
+}
 function pill(text, tone = "") { return `<span class="pill ${tone}">${text}</span>`; }
 function field(label, value) { return `<div class="field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "Not set")}</strong></div>`; }
 function options(items, selected) { return items.map((item) => `<option ${item === selected ? "selected" : ""}>${item}</option>`).join(""); }
@@ -1769,15 +1894,15 @@ document.querySelector(".bottom-nav")?.addEventListener("click", (event) => {
 });
 document.addEventListener("click", (event) => {
   const actionTarget = event.target.closest("[data-action]");
-  if (["status", "assign-pm", "assign-sales"].includes(actionTarget?.dataset?.action)) return;
+  if (["status", "assign-pm", "assign-sales", "set-member-role"].includes(actionTarget?.dataset?.action)) return;
   handleAction(actionTarget || {});
 });
 document.addEventListener("change", (event) => {
-  if (["status", "assign-pm", "assign-sales"].includes(event.target?.dataset?.action)) handleAction(event.target);
+  if (["status", "assign-pm", "assign-sales", "set-member-role"].includes(event.target?.dataset?.action)) handleAction(event.target);
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260610-0128");
+  navigator.serviceWorker.register("./service-worker.js?v=20260610-0848");
 }
 
 boot();

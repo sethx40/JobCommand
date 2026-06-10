@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcommand-v16-settings-list";
+const CACHE_NAME = "jobcommand-v17-access-controls";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
