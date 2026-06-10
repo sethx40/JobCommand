@@ -246,18 +246,24 @@ function renderLogin() {
     renderSignedInSetupBlocked();
     return;
   }
-  view.innerHTML = `<section class="auth-card">
-    <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
-    <h2>Sign in to JobCommand</h2>
-    <p class="subtle">Use the beta account created in Supabase for Seth or Lynn.</p>
-    ${supabaseDiagnosticsCard()}
+  view.innerHTML = `<section class="auth-card login-card">
+    <div class="login-logo-wrap"><img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" /></div>
+    <div class="login-copy">
+      <p class="eyebrow">Internal Beta</p>
+      <h2>Production starts here.</h2>
+      <p class="subtle">Sign in to your shared JobCommand workspace for jobs, schedules, work orders, contacts, and team updates.</p>
+    </div>
+    <div class="login-highlights">
+      <span>Shared jobs</span>
+      <span>Team assignments</span>
+      <span>Field-ready CRM</span>
+    </div>
     <form id="loginForm" class="form-grid">
       <label>Email<input name="email" type="email" required autocomplete="email" /></label>
       <label>Password<input name="password" type="password" required autocomplete="current-password" /></label>
-      <button class="primary-button full" type="submit">Log in</button>
+      <button class="primary-button full" type="submit">Sign in</button>
     </form>
-    <button class="secondary-button" data-action="test-supabase" type="button">Test Supabase Connection</button>
-    <div id="authStatus">${authStatusMarkup()}</div>
+    ${authStatus ? `<div id="authStatus">${authStatusMarkup()}</div>` : ""}
   </section>`;
   document.querySelector("#loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1732,7 +1738,7 @@ document.addEventListener("change", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260610-0052");
+  navigator.serviceWorker.register("./service-worker.js?v=20260610-0111");
 }
 
 boot();

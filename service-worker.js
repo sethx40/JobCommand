@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcommand-v13-team-pm-logo";
+const CACHE_NAME = "jobcommand-v14-login-logo-polish";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();

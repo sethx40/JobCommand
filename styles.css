@@ -50,15 +50,17 @@ button { cursor: pointer; }
 }
 
 .brand-logo {
-  width: 132px;
+  display: block;
+  width: 142px;
   height: 52px;
-  object-fit: contain;
-  object-position: left center;
-  padding: 0;
-  background: transparent;
+  object-fit: cover;
+  object-position: center;
+  padding: 3px;
+  background: #fff;
   border: 0;
-  border-radius: 10px;
-  box-shadow: none;
+  border-radius: 12px;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.18);
+  clip-path: inset(0 round 12px);
 }
 
 .title-block {
@@ -150,6 +152,7 @@ h3 { margin-bottom: 9px; font-size: 0.9rem; letter-spacing: 0; }
 }
 
 .icon-button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 44px;
@@ -158,9 +161,27 @@ h3 { margin-bottom: 9px; font-size: 0.9rem; letter-spacing: 0; }
   color: var(--brand);
   background: linear-gradient(135deg, #f7fbff, #dbe4ea);
   border-radius: 50%;
-  font-size: 1.5rem;
-  line-height: 0;
+  font-size: 0;
+  line-height: 1;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+}
+
+.icon-button::before,
+.icon-button::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 3px;
+  background: currentColor;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+}
+
+.icon-button::after {
+  width: 3px;
+  height: 16px;
 }
 
 .primary-button {
@@ -513,6 +534,72 @@ h3 { margin-bottom: 9px; font-size: 0.9rem; letter-spacing: 0; }
   width: min(100%, 300px);
   height: auto;
   border-radius: 14px;
+  display: block;
+}
+
+.login-card {
+  max-width: 520px;
+  gap: 16px;
+  padding: 0;
+  overflow: hidden;
+  background: linear-gradient(180deg, #ffffff, #f7fafc);
+  border-color: #cfdce4;
+}
+
+.login-logo-wrap {
+  display: grid;
+  place-items: center;
+  padding: 22px 20px 18px;
+  background:
+    linear-gradient(135deg, rgba(47,111,149,0.10), rgba(227,162,42,0.08)),
+    #fff;
+  border-bottom: 1px solid #e1e8ed;
+}
+
+.login-logo-wrap .auth-logo {
+  width: min(100%, 420px);
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(16,38,52,0.12);
+}
+
+.login-copy,
+.login-card form,
+.login-card #authStatus {
+  margin-inline: 20px;
+}
+
+.login-copy h2 {
+  margin-bottom: 7px;
+  font-size: 1.45rem;
+}
+
+.login-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0 20px;
+}
+
+.login-highlights span {
+  min-height: 30px;
+  padding: 7px 10px;
+  color: #284d62;
+  background: #eaf3f7;
+  border: 1px solid #d2e1e9;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
+.login-card form {
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #dce5ea;
+  border-radius: var(--radius);
+}
+
+.login-card > :last-child {
+  margin-bottom: 20px;
 }
 
 .diagnostics-card {
@@ -1149,7 +1236,7 @@ label {
 @media (min-width: 720px) {
   .app-shell { padding-bottom: 92px; }
   .topbar { padding-inline: 28px; }
-  .brand-logo { width: 172px; height: 54px; }
+  .brand-logo { width: 178px; height: 56px; border-radius: 14px; clip-path: inset(0 round 14px); }
   .view { padding: 20px 24px 8px; }
   .command-header {
     grid-template-columns: 1fr auto;
@@ -1168,7 +1255,7 @@ label {
 }
 
 @media (max-width: 620px) {
-  .brand-logo { width: 104px; height: 40px; border-radius: 8px; }
+  .brand-logo { width: 112px; height: 42px; border-radius: 10px; clip-path: inset(0 round 10px); }
   .nav-item { font-size: 0.58rem; }
   .nav-icon { width: 17px; height: 17px; }
   .calendar-titlebar {
