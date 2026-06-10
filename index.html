@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.json" />
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icons/icon.svg" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260609-2009" />
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -111,6 +111,19 @@
       </div>
     </template>
 
-    <script src="app.js" type="module"></script>
+    <script>
+      window.JOBCOMMAND_DEBUG_BUILD = "20260609-2009";
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+      }
+      if ("caches" in window) {
+        caches.keys().then((keys) => keys.forEach((key) => {
+          if (key.startsWith("jobcommand-")) caches.delete(key);
+        }));
+      }
+    </script>
+    <script src="app.js?v=20260609-2009" type="module"></script>
   </body>
 </html>

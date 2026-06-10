@@ -1,4 +1,4 @@
-import * as SupabaseConfig from "./supabase-config.js";
+import * as SupabaseConfig from "./supabase-config.js?v=20260609-2009";
 
 const STORE_KEY = "contractorProductionCrm.v1";
 const todayIso = new Date().toISOString().slice(0, 10);
@@ -224,6 +224,7 @@ function renderLogin() {
 function supabaseDiagnosticsCard() {
   const urlValid = isValidSupabaseUrl(SUPABASE_URL);
   return `<div class="diagnostics-card">
+    <div class="diag-row"><span>App build</span><strong>${escapeHtml(window.JOBCOMMAND_DEBUG_BUILD || "unknown")}</strong></div>
     <div class="diag-row"><span>Supabase URL</span><strong>${escapeHtml(SUPABASE_URL || "Missing")}</strong></div>
     <div class="diag-row"><span>URL looks valid</span><strong>${urlValid ? "Yes" : "No"}</strong></div>
     <div class="diag-row"><span>Anon key present</span><strong>${SUPABASE_ANON_KEY ? "Yes, " + maskKey(SUPABASE_ANON_KEY) : "No"}</strong></div>
