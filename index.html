@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.json" />
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icons/icon.svg" />
-    <link rel="stylesheet" href="styles.css?v=20260609-2009" />
+    <link rel="stylesheet" href="styles.css?v=20260609-2018" />
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -21,7 +21,13 @@
         <button class="icon-button" id="quickAddBtn" type="button" aria-label="Add job">+</button>
       </header>
 
-      <main id="view" class="view" tabindex="-1"></main>
+      <main id="view" class="view" tabindex="-1">
+        <section class="auth-card">
+          <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
+          <h2>Loading JobCommand</h2>
+          <p class="subtle">If this message stays on screen, the app script did not load. Re-upload <strong>index.html</strong>, <strong>app.js</strong>, <strong>styles.css</strong>, <strong>service-worker.js</strong>, and <strong>supabase-config.js</strong>, then hard refresh.</p>
+        </section>
+      </main>
 
       <nav class="bottom-nav" aria-label="Primary navigation">
         <button class="nav-item active" data-view="today" type="button">
@@ -112,7 +118,7 @@
     </template>
 
     <script>
-      window.JOBCOMMAND_DEBUG_BUILD = "20260609-2009";
+      window.JOBCOMMAND_DEBUG_BUILD = "20260609-2018";
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker.getRegistrations().then((registrations) => {
           registrations.forEach((registration) => registration.unregister());
@@ -124,6 +130,6 @@
         }));
       }
     </script>
-    <script src="app.js?v=20260609-2009" type="module"></script>
+    <script src="app.js?v=20260609-2018" type="module"></script>
   </body>
 </html>

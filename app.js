@@ -1,11 +1,8 @@
-import * as SupabaseConfig from "./supabase-config.js?v=20260609-2009";
-
 const STORE_KEY = "contractorProductionCrm.v1";
 const todayIso = new Date().toISOString().slice(0, 10);
-const SUPABASE_URL = SupabaseConfig.SUPABASE_URL || "";
-const SUPABASE_ANON_KEY = SupabaseConfig.SUPABASE_ANON_KEY || SupabaseConfig.SUPABASE_PUBLISHABLE_KEY || "";
-const DEFAULT_COMPANY_NAME = SupabaseConfig.DEFAULT_COMPANY_NAME || "JobCommand Beta";
-const isSupabaseConfigured = isValidSupabaseUrl(SUPABASE_URL) && isLikelyAnonKey(SUPABASE_ANON_KEY);
+let SUPABASE_URL = "";
+let SUPABASE_ANON_KEY = "";
+let DEFAULT_COMPANY_NAME = "JobCommand Beta";
 let supabase = null;
 let session = null;
 let profile = null;
@@ -15,6 +12,7 @@ let cloudReady = false;
 let saveTimer = null;
 let calendarCursor = new Date(`${todayIso}T12:00:00`);
 let selectedCalendarDate = todayIso;
+let configImportError = null;
 let supabaseInitError = null;
 let authStatus = null;
 
@@ -56,8 +54,13 @@ function addDays(days) {
 }
 
 function loadState() {
-  const saved = localStorage.getItem(STORE_KEY);
-  if (saved) return sanitizeState(JSON.parse(saved));
+  try {
+    const saved = localStorage.getItem(STORE_KEY);
+    if (saved) return sanitizeState(JSON.parse(saved));
+  } catch (error) {
+    console.warn("Local cache could not be read. Starting with empty cache.", error);
+    localStorage.removeItem(STORE_KEY);
+  }
   const fresh = {
     settings: { ...defaults },
     jobs: [],
@@ -108,7 +111,8 @@ function saveState() {
 async function boot() {
   try {
     cloudReady = false;
-    if (!isSupabaseConfigured) {
+    await loadSupabaseConfig();
+    if (!hasSupabaseConfig()) {
       renderSetupRequired();
       return;
     }
@@ -131,6 +135,21 @@ async function boot() {
   } catch (error) {
     authStatus = { ok: false, title: "Startup failed", error };
     renderLogin();
+  }
+}
+
+async function loadSupabaseConfig() {
+  try {
+    const build = window.JOBCOMMAND_DEBUG_BUILD || Date.now();
+    const config = await import(`./supabase-config.js?v=${build}`);
+    SUPABASE_URL = config.SUPABASE_URL || "";
+    SUPABASE_ANON_KEY = config.SUPABASE_ANON_KEY || config.SUPABASE_PUBLISHABLE_KEY || "";
+    DEFAULT_COMPANY_NAME = config.DEFAULT_COMPANY_NAME || "JobCommand Beta";
+    configImportError = null;
+  } catch (error) {
+    SUPABASE_URL = "";
+    SUPABASE_ANON_KEY = "";
+    configImportError = error;
   }
 }
 
@@ -225,12 +244,14 @@ function supabaseDiagnosticsCard() {
   const urlValid = isValidSupabaseUrl(SUPABASE_URL);
   return `<div class="diagnostics-card">
     <div class="diag-row"><span>App build</span><strong>${escapeHtml(window.JOBCOMMAND_DEBUG_BUILD || "unknown")}</strong></div>
+    <div class="diag-row"><span>Config imported</span><strong>${configImportError ? "No" : "Yes"}</strong></div>
     <div class="diag-row"><span>Supabase URL</span><strong>${escapeHtml(SUPABASE_URL || "Missing")}</strong></div>
     <div class="diag-row"><span>URL looks valid</span><strong>${urlValid ? "Yes" : "No"}</strong></div>
     <div class="diag-row"><span>Anon key present</span><strong>${SUPABASE_ANON_KEY ? "Yes, " + maskKey(SUPABASE_ANON_KEY) : "No"}</strong></div>
     <div class="diag-row"><span>Anon key looks valid</span><strong>${isLikelyAnonKey(SUPABASE_ANON_KEY) ? "Yes" : "No"}</strong></div>
     <div class="diag-row"><span>Client initialized</span><strong>${supabase ? "Yes" : "No"}</strong></div>
-    ${supabaseInitError ? `<p class="diag-error">${escapeHtml(errorSummary(supabaseInitError))}</p>` : ""}
+    ${configImportError ? `<p class="diag-error">Config import: ${escapeHtml(errorSummary(configImportError))}</p>` : ""}
+    ${supabaseInitError ? `<p class="diag-error">Client init: ${escapeHtml(errorSummary(supabaseInitError))}</p>` : ""}
   </div>`;
 }
 
@@ -384,7 +405,8 @@ async function testSupabaseConnection() {
   authStatus = { ok: null, title: "Testing Supabase", message: "Checking config, client, and Auth endpoint..." };
   renderLogin();
   try {
-    if (!isSupabaseConfigured) throw new Error("Supabase URL or anon key is missing or malformed.");
+    await loadSupabaseConfig();
+    if (!hasSupabaseConfig()) throw new Error("Supabase URL or anon key is missing or malformed.");
     if (!supabase) await initSupabaseClient();
     if (!supabase) throw supabaseInitError || new Error("Supabase client failed to initialize.");
     const authSettingsUrl = `${trimSlash(SUPABASE_URL)}/auth/v1/settings`;
@@ -1208,6 +1230,10 @@ function isValidSupabaseUrl(value = "") {
   }
 }
 
+function hasSupabaseConfig() {
+  return isValidSupabaseUrl(SUPABASE_URL) && isLikelyAnonKey(SUPABASE_ANON_KEY);
+}
+
 function isLikelyAnonKey(value = "") {
   return Boolean(value) && value.length > 30 && !value.startsWith("http://") && !value.startsWith("https://") && !value.includes(".supabase.co");
 }
@@ -1254,7 +1280,7 @@ document.addEventListener("input", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js");
+  navigator.serviceWorker.register("./service-worker.js?v=20260609-2018");
 }
 
 boot();
