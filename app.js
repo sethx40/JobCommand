@@ -208,6 +208,10 @@ function renderLogin() {
   viewTitle.textContent = "Login";
   companyLabel.textContent = "JobCommand";
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.remove("active"));
+  if (session?.user) {
+    renderSignedInSetupBlocked();
+    return;
+  }
   view.innerHTML = `<section class="auth-card">
     <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
     <h2>Sign in to JobCommand</h2>
@@ -238,6 +242,22 @@ function renderLogin() {
       renderLogin();
     }
   });
+}
+
+function renderSignedInSetupBlocked() {
+  viewTitle.textContent = "Setup";
+  view.innerHTML = `<section class="auth-card">
+    <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
+    <h2>Signed in, setup blocked</h2>
+    <p class="subtle">You are signed in as <strong>${escapeHtml(session.user.email)}</strong>. Login worked. JobCommand is blocked while setting up your shared workspace.</p>
+    ${supabaseDiagnosticsCard()}
+    <div id="authStatus">${authStatusMarkup()}</div>
+    <div class="row-actions">
+      <button class="secondary-button" data-action="retry-boot" type="button">Retry workspace setup</button>
+      <button class="ghost-button" data-action="logout" type="button">Log out</button>
+    </div>
+    <p class="subtle">If this says <strong>ensure_profile</strong> is missing or permission is denied, run the latest <strong>supabase-schema.sql</strong> in Supabase SQL Editor.</p>
+  </section>`;
 }
 
 function supabaseDiagnosticsCard() {
@@ -1284,7 +1304,7 @@ document.addEventListener("input", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260609-2118");
+  navigator.serviceWorker.register("./service-worker.js?v=20260609-2152");
 }
 
 boot();
