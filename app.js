@@ -250,6 +250,7 @@ function supabaseDiagnosticsCard() {
     <div class="diag-row"><span>Anon key present</span><strong>${SUPABASE_ANON_KEY ? "Yes, " + maskKey(SUPABASE_ANON_KEY) : "No"}</strong></div>
     <div class="diag-row"><span>Anon key looks valid</span><strong>${isLikelyAnonKey(SUPABASE_ANON_KEY) ? "Yes" : "No"}</strong></div>
     <div class="diag-row"><span>Client initialized</span><strong>${supabase ? "Yes" : "No"}</strong></div>
+    <div class="diag-row"><span>Session</span><strong>${session?.user?.email ? "Signed in as " + escapeHtml(session.user.email) : "Not signed in"}</strong></div>
     ${configImportError ? `<p class="diag-error">Config import: ${escapeHtml(errorSummary(configImportError))}</p>` : ""}
     ${supabaseInitError ? `<p class="diag-error">Client init: ${escapeHtml(errorSummary(supabaseInitError))}</p>` : ""}
   </div>`;
@@ -265,7 +266,10 @@ function authStatusMarkup() {
 async function loadWorkspace() {
   const user = session.user;
   const displayName = user.user_metadata?.full_name || user.email.split("@")[0];
-  const { error: profileError } = await supabase.from("profiles").upsert({ id: user.id, email: user.email, full_name: displayName }, { onConflict: "id" });
+  const { error: profileError } = await supabase.rpc("ensure_profile", {
+    profile_email: user.email,
+    profile_full_name: displayName
+  });
   if (profileError) throw new Error(`Profile setup failed: ${profileError.message}`);
   const { data: memberships, error } = await supabase.from("company_members").select("company_id, role, companies(id, name)").eq("user_id", user.id).limit(1);
   if (error) throw new Error(`Workspace lookup failed: ${error.message}`);
@@ -1280,7 +1284,7 @@ document.addEventListener("input", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260609-2018");
+  navigator.serviceWorker.register("./service-worker.js?v=20260609-2118");
 }
 
 boot();
