@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcommand-v10-ui-polish";
+const CACHE_NAME = "jobcommand-v11-contacts-calendar";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();

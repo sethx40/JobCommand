@@ -67,7 +67,8 @@ function loadState() {
     settings: { ...defaults },
     jobs: [],
     calendarEvents: [],
-    notifications: []
+    notifications: [],
+    contacts: []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(fresh));
   return fresh;
@@ -78,7 +79,8 @@ function sanitizeState(data) {
     settings: { ...defaults, ...(data.settings || {}) },
     jobs: Array.isArray(data.jobs) ? data.jobs.filter((job) => !isOldDemoJob(job)).map(normalizeJob) : [],
     calendarEvents: Array.isArray(data.calendarEvents) ? data.calendarEvents : [],
-    notifications: Array.isArray(data.notifications) ? data.notifications : []
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+    contacts: Array.isArray(data.contacts) ? data.contacts.map(normalizeContact) : []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(clean));
   return clean;
@@ -96,6 +98,21 @@ function normalizeJob(job) {
     notesActivity: Array.isArray(job.notesActivity) ? job.notesActivity : [],
     reminders: Array.isArray(job.reminders) ? job.reminders : [],
     timeline: Array.isArray(job.timeline) ? job.timeline : []
+  };
+}
+
+function normalizeContact(contact) {
+  return {
+    id: uid("contact"),
+    name: "",
+    contactType: "Other",
+    companyName: "",
+    phone: "",
+    email: "",
+    address: "",
+    trade: "",
+    notes: "",
+    ...contact
   };
 }
 
@@ -313,7 +330,7 @@ async function loadWorkspace() {
 
 async function loadCloudState() {
   const companyId = company.id;
-  const [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes] = await Promise.all([
+  const [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes, contactsRes] = await Promise.all([
     supabase.from("settings").select("*").eq("company_id", companyId).maybeSingle(),
     supabase.from("company_members").select("user_id, profiles(full_name, email)").eq("company_id", companyId),
     supabase.from("jobs").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
@@ -324,9 +341,10 @@ async function loadCloudState() {
     supabase.from("notes").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
     supabase.from("mentions").select("*").eq("company_id", companyId),
     supabase.from("notifications").select("*").eq("company_id", companyId).eq("user_id", profile.id).order("created_at", { ascending: false }),
-    supabase.from("calendar_events").select("*").eq("company_id", companyId)
+    supabase.from("calendar_events").select("*").eq("company_id", companyId),
+    supabase.from("contacts").select("*").eq("company_id", companyId).order("name", { ascending: true })
   ]);
-  const failed = [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes].find((result) => result.error);
+  const failed = [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes, contactsRes].find((result) => result.error);
   if (failed) throw new Error(`Data fetch failed: ${failed.error.message}`);
   const teamMembers = membersRes.data?.map((m) => m.profiles?.full_name || m.profiles?.email?.split("@")[0]).filter(Boolean) || ["Seth", "Lynn"];
   workspaceMembers = membersRes.data || [];
@@ -334,7 +352,8 @@ async function loadCloudState() {
     settings: { ...defaults, ...(settingsRes.data?.data || {}), companyName: company.name, currentUser: profile.full_name, teamMembers },
     jobs: (jobsRes.data || []).map((row) => cloudJob(row, tasksRes.data || [], scheduleRes.data || [], workOrdersRes.data || [], punchRes.data || [], notesRes.data || [], mentionsRes.data || [], calendarRes.data || [])),
     calendarEvents: (calendarRes.data || []).filter((item) => !item.job_id).map(cloudStandaloneEvent),
-    notifications: (notificationsRes.data || []).map(cloudNotification)
+    notifications: (notificationsRes.data || []).map(cloudNotification),
+    contacts: (contactsRes.data || []).map(cloudContact)
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
 }
@@ -374,6 +393,20 @@ function cloudNotification(row) {
 
 function cloudStandaloneEvent(row) {
   return { id: row.id, title: row.title, eventType: row.event_type || "Custom", date: row.event_date || "", time: row.event_time || "", assignedTo: row.assigned_to || "", status: row.status || "", notes: row.notes || "" };
+}
+
+function cloudContact(row) {
+  return normalizeContact({
+    id: row.id,
+    name: row.name || "",
+    contactType: row.contact_type || "Other",
+    companyName: row.company_name || "",
+    phone: row.phone || "",
+    email: row.email || "",
+    address: row.address || "",
+    trade: row.trade || "",
+    notes: row.notes || ""
+  });
 }
 
 function scheduleCloudSave() {
@@ -417,6 +450,7 @@ async function saveCloudState() {
   await replaceChildren("notes", state.jobs.flatMap((job) => job.notesActivity.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, author_id: item.authorId || profile.id, author_name: item.author || profile.full_name, body: item.text, created_at: item.timestamp }))));
   await replaceChildren("mentions", state.jobs.flatMap((job) => job.notesActivity.flatMap((note) => (note.mentions || []).map((name) => ({ id: `${note.id}_${name}`, company_id: companyId, job_id: job.id, note_id: note.id, tagged_name: name, tagged_user_id: memberIdByName(name) })))));
   await replaceChildren("notifications", state.notifications.map((item) => ({ id: item.id, company_id: companyId, user_id: item.userId || memberIdByName(item.taggedUser), type: item.type, tagged_name: item.taggedUser, job_id: item.jobId, note_id: item.noteId, read: item.read, created_at: item.timestamp })));
+  await replaceChildren("contacts", (state.contacts || []).map((item) => ({ id: item.id, company_id: companyId, name: item.name, contact_type: item.contactType, company_name: item.companyName, phone: item.phone, email: item.email, address: item.address, trade: item.trade, notes: item.notes })));
 }
 
 async function replaceChildren(table, rows) {
@@ -472,6 +506,10 @@ function makeJob(data = {}) {
   };
 }
 
+function makeContact(data = {}) {
+  return normalizeContact(data);
+}
+
 function task(title, assignedTo, dueDate, priority, complete = false) {
   return { id: uid("task"), title, assignedTo, dueDate, priority, complete, notes: "" };
 }
@@ -493,6 +531,7 @@ function render() {
   const routes = {
     today: renderToday,
     jobs: renderJobs,
+    contacts: renderContacts,
     calendar: renderCalendar,
     detail: renderJobDetail,
     schedule: renderSchedule,
@@ -605,6 +644,11 @@ function taskRow({ job, item }) {
 
 function renderJobs() {
   viewTitle.textContent = "Jobs";
+  const activeId = document.activeElement?.id;
+  const activeSelection = activeId === "search" ? {
+    start: document.activeElement.selectionStart,
+    end: document.activeElement.selectionEnd
+  } : null;
   const filters = getFilters();
   const jobs = state.jobs.filter((job) => matchesFilters(job, filters));
   if (!state.jobs.length) {
@@ -632,6 +676,73 @@ function renderJobs() {
       renderJobs();
     });
   });
+  if (activeSelection) {
+    const search = document.querySelector("#search");
+    search.focus({ preventScroll: true });
+    search.setSelectionRange(activeSelection.start, activeSelection.end);
+  }
+}
+
+function renderContacts() {
+  viewTitle.textContent = "Contacts";
+  const activeId = document.activeElement?.id;
+  const activeSelection = activeId === "contactSearch" ? {
+    start: document.activeElement.selectionStart,
+    end: document.activeElement.selectionEnd
+  } : null;
+  const search = sessionStorage.getItem("contacts.search") || "";
+  const type = sessionStorage.getItem("contacts.type") || "All contacts";
+  const contacts = (state.contacts || [])
+    .filter((contact) => {
+      const haystack = `${contact.name} ${contact.contactType} ${contact.companyName} ${contact.phone} ${contact.email} ${contact.address} ${contact.trade}`.toLowerCase();
+      return (!search || haystack.includes(search.toLowerCase())) && (type === "All contacts" || contact.contactType === type);
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  view.innerHTML = `
+    <section class="toolbar board-toolbar">
+      <div><h2>Contact Hub</h2><p class="subtle">Clients, subcontractors, team contacts, and other production contacts.</p></div>
+      <button class="primary-button" data-action="add-contact" type="button">Add Contact</button>
+    </section>
+    <section class="filters contact-filters">
+      <input id="contactSearch" placeholder="Search contacts, phone, address, trade" value="${escapeHtml(search)}" />
+      ${selectHtml("contactTypeFilter", ["All contacts", "Client", "Subcontractor", "Team", "Other"], type)}
+    </section>
+    <section class="contact-grid">${contacts.length ? contacts.map(contactCard).join("") : `<div class="empty">No contacts yet. Add your first client, sub, or team contact.</div>`}</section>
+  `;
+  document.querySelector("#contactSearch").addEventListener("input", (event) => {
+    sessionStorage.setItem("contacts.search", event.target.value);
+    renderContacts();
+  });
+  document.querySelector("#contactTypeFilter").addEventListener("input", (event) => {
+    sessionStorage.setItem("contacts.type", event.target.value);
+    renderContacts();
+  });
+  if (activeSelection) {
+    const input = document.querySelector("#contactSearch");
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(activeSelection.start, activeSelection.end);
+  }
+}
+
+function contactCard(contact) {
+  return `<article class="contact-card">
+    <div class="card-head">
+      <div><h2>${escapeHtml(contact.name || "Unnamed contact")}</h2><p class="subtle">${escapeHtml(contact.companyName || contact.address || "No company/address")}</p></div>
+      ${pill(contact.contactType || "Other", contact.contactType === "Subcontractor" ? "blue" : contact.contactType === "Client" ? "good" : "")}
+    </div>
+    <div class="field-grid compact-fields">
+      ${field("Phone", contact.phone)}
+      ${field("Email", contact.email)}
+      ${field("Trade", contact.trade)}
+      ${field("Address", contact.address)}
+    </div>
+    ${contact.notes ? `<p>${escapeHtml(contact.notes)}</p>` : ""}
+    <div class="row-actions">
+      ${contact.phone ? `<a class="secondary-button link-button" href="tel:${escapeHtml(contact.phone)}">Call</a>` : ""}
+      ${contact.email ? `<a class="ghost-button link-button" href="mailto:${escapeHtml(contact.email)}">Email</a>` : ""}
+      <button class="ghost-button" data-action="edit-contact" data-id="${contact.id}" type="button">Edit</button>
+    </div>
+  </article>`;
 }
 
 function getFilters() {
@@ -758,8 +869,12 @@ function renderCalendar() {
   viewTitle.textContent = "Calendar";
   const calendarMode = sessionStorage.getItem("calendar.view") || "month";
   const events = buildCalendarEvents();
-  const monthEvents = events.filter((event) => event.date?.startsWith(monthKey(calendarCursor)));
   const selectedEvents = events.filter((event) => event.date === selectedCalendarDate);
+  const modeContent = calendarMode === "day"
+    ? dayCalendar(events)
+    : calendarMode === "week"
+      ? weekCalendar(events)
+      : monthCalendar(events);
   view.innerHTML = `
     <section class="calendar-head section">
       <div class="calendar-titlebar">
@@ -768,20 +883,50 @@ function renderCalendar() {
         <button class="calendar-arrow" data-action="calendar-next" type="button" aria-label="Next month">›</button>
       </div>
       <div class="calendar-viewbar">
-        ${["day", "week", "month", "agenda"].map((mode) => `<button class="${calendarMode === mode ? "active" : ""}" data-action="calendar-view" data-mode="${mode}" type="button">${mode[0].toUpperCase() + mode.slice(1)}</button>`).join("")}
+        ${["day", "week", "month"].map((mode) => `<button class="${calendarMode === mode ? "active" : ""}" data-action="calendar-view" data-mode="${mode}" type="button">${mode[0].toUpperCase() + mode.slice(1)}</button>`).join("")}
       </div>
       <button class="secondary-button" data-action="calendar-today" type="button">Today</button>
     </section>
-    <section class="calendar-grid-card section">
-      <div class="calendar-weekdays">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<span>${day}</span>`).join("")}</div>
-      <div class="calendar-grid">${monthCells(calendarCursor, monthEvents)}</div>
-    </section>
+    ${modeContent}
     <section class="selected-date-panel">
       <div><p class="eyebrow">Selected Date</p><h2>${fmt(selectedCalendarDate)}</h2><p class="subtle">${selectedEvents.length} event${selectedEvents.length === 1 ? "" : "s"} selected</p></div>
       <button class="primary-button" data-action="add-calendar-event" type="button">Add Calendar Event</button>
     </section>
     <section class="stack">${selectedEvents.length ? selectedEvents.map(calendarCard).join("") : `<div class="empty">No calendar items for this date.</div>`}</section>
   `;
+}
+
+function monthCalendar(events) {
+  const monthEvents = events.filter((event) => event.date?.startsWith(monthKey(calendarCursor)));
+  return `<section class="calendar-grid-card section">
+    <div class="calendar-weekdays">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<span>${day}</span>`).join("")}</div>
+    <div class="calendar-grid">${monthCells(calendarCursor, monthEvents)}</div>
+  </section>`;
+}
+
+function weekCalendar(events) {
+  const start = weekStart(selectedCalendarDate);
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    const iso = localDateInputValue(date);
+    const dayEvents = events.filter((event) => event.date === iso);
+    return `<button class="week-day-card ${iso === todayIso ? "today-day" : ""} ${iso === selectedCalendarDate ? "selected-day" : ""}" data-action="select-calendar-date" data-date="${iso}" type="button">
+      <span class="week-name">${date.toLocaleDateString(undefined, { weekday: "short" })}</span>
+      <strong>${date.getDate()}</strong>
+      <span>${dayEvents.length} item${dayEvents.length === 1 ? "" : "s"}</span>
+      <span class="day-events">${dayEvents.slice(0, 2).map((event) => `<span class="event-chip">${shortEvent(event)}</span>`).join("")}</span>
+    </button>`;
+  }).join("");
+  return `<section class="calendar-grid-card section"><div class="week-strip">${days}</div></section>`;
+}
+
+function dayCalendar(events) {
+  const dayEvents = events.filter((event) => event.date === selectedCalendarDate);
+  return `<section class="day-agenda section">
+    <div><p class="eyebrow">Day View</p><h2>${new Date(`${selectedCalendarDate}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</h2></div>
+    <div class="timeline-list">${dayEvents.length ? dayEvents.map((event) => `<div class="timeline-event"><span>${event.time || "All day"}</span><div><strong>${escapeHtml(event.title)}</strong><p class="subtle">${escapeHtml(event.job?.name || event.type)}</p></div></div>`).join("") : `<div class="empty">No calendar items for this date.</div>`}</div>
+  </section>`;
 }
 
 function monthCells(cursor, events) {
@@ -793,7 +938,7 @@ function monthCells(cursor, events) {
   return Array.from({ length: 42 }, (_, index) => {
     const date = new Date(start);
     date.setDate(start.getDate() + index);
-    const iso = date.toISOString().slice(0, 10);
+    const iso = localDateInputValue(date);
     const dayEvents = events.filter((event) => event.date === iso);
     const visible = dayEvents.slice(0, 2);
     return `<button class="calendar-day ${date.getMonth() !== month ? "muted-day" : ""} ${iso === todayIso ? "today-day" : ""} ${iso === selectedCalendarDate ? "selected-day" : ""}" data-action="select-calendar-date" data-date="${iso}" type="button">
@@ -829,14 +974,22 @@ function renderSettings() {
       <button class="primary-button compact-action" data-action="save-settings" type="button">Save</button>
     </section>
     <section class="settings-grid">
-      <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><button class="ghost-button" data-action="logout" type="button">Log out</button></div></article>
+      <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><div class="row-actions"><button class="secondary-button" data-action="edit-my-contact" type="button">Edit my contact card</button><button class="ghost-button" data-action="logout" type="button">Log out</button></div></div></article>
       <article class="settings-card"><div class="settings-icon">W</div><div class="settings-fields"><h2>Workspace</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></div></article>
       <article class="settings-card"><div class="settings-icon">T</div><div class="settings-fields"><h2>App Date & Time</h2><p class="subtle">Use this for field testing or when your device/browser date is off.</p><label>App date<input id="appDate" type="date" value="${state.settings.appDate || localDateInputValue(new Date())}"></label><label>App time<input id="appTime" type="time" value="${state.settings.appTime || localTimeInputValue(new Date())}"></label><button class="ghost-button" data-action="clear-app-date" type="button">Use device date/time</button></div></article>
-      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><label>Team members<textarea id="teamMembers" rows="4">${state.settings.teamMembers.join("\n")}</textarea></label><label>Trades<textarea id="trades" rows="6">${state.settings.trades.join("\n")}</textarea></label><label>Job statuses<textarea id="statuses" rows="7">${state.settings.statuses.join("\n")}</textarea></label></div></article>
+      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><p class="subtle">Add or remove the values used in job forms and filters.</p>${listEditor("teamMembers", "Team members", state.settings.teamMembers, "Add team member")}${listEditor("trades", "Trades", state.settings.trades, "Add trade")}${listEditor("statuses", "Job statuses", state.settings.statuses, "Add status")}</div></article>
       <article class="settings-card"><div class="settings-icon">B</div><div><h2>Backup & Migration</h2><p class="subtle">Export a backup or import an old localStorage backup into this Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></div></article>
       <article class="settings-card danger-zone"><div class="settings-icon">!</div><div><h2>Danger Zone</h2><p class="subtle">Clear shared data for this workspace.</p><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></div></article>
     </section>
   `;
+}
+
+function listEditor(listName, title, items, placeholder) {
+  return `<div class="editable-list" data-list="${listName}">
+    <div class="row-between"><h3>${title}</h3><span class="tiny">${items.length} saved</span></div>
+    <div class="list-chip-grid">${items.map((item) => `<span class="edit-chip">${escapeHtml(item)}<button data-action="remove-list-item" data-list="${listName}" data-value="${encodeURIComponent(item)}" type="button" aria-label="Remove ${escapeHtml(item)}">×</button></span>`).join("")}</div>
+    <div class="inline-add"><input id="${listName}Input" placeholder="${placeholder}" /><button class="secondary-button" data-action="add-list-item" data-list="${listName}" type="button">Add</button></div>
+  </div>`;
 }
 
 function openJobForm(job = makeJob()) {
@@ -860,12 +1013,78 @@ function openJobForm(job = makeJob()) {
     const existing = findJob(job.id);
     if (existing) Object.assign(existing, data);
     else state.jobs.unshift(makeJob(data));
-    log(existing || state.jobs[0], existing ? "Job details updated" : "Job added");
+    const savedJob = existing || state.jobs[0];
+    upsertClientContact(savedJob);
+    log(savedJob, existing ? "Job details updated" : "Job added");
     closeModal();
     currentView = existing ? "detail" : "jobs";
-    activeJobId = (existing || state.jobs[0]).id;
+    activeJobId = savedJob.id;
     render();
   });
+}
+
+function openContactForm(contact = makeContact()) {
+  const existing = (state.contacts || []).find((item) => item.id === contact?.id);
+  const form = document.createElement("form");
+  form.className = "form-grid contact-form";
+  form.innerHTML = `
+    <label>Name<input name="name" value="${escapeHtml(contact?.name || "")}" required /></label>
+    <label>Type<select name="contactType">${options(["Client", "Subcontractor", "Team", "Other"], contact?.contactType || "Other")}</select></label>
+    <label>Company<input name="companyName" value="${escapeHtml(contact?.companyName || "")}" /></label>
+    <label>Trade<select name="trade"><option></option>${options(state.settings.trades, contact?.trade || "")}</select></label>
+    <label>Phone<input name="phone" type="tel" value="${escapeHtml(contact?.phone || "")}" /></label>
+    <label>Email<input name="email" type="email" value="${escapeHtml(contact?.email || "")}" /></label>
+    <label class="full">Address<input name="address" value="${escapeHtml(contact?.address || "")}" placeholder="Street, city, state, ZIP" /></label>
+    <label class="full">Notes<textarea name="notes" rows="4">${escapeHtml(contact?.notes || "")}</textarea></label>
+    <div class="modal-actions split-actions full">
+      ${existing ? `<button class="danger-button" data-action="delete-contact" data-id="${existing.id}" type="button">Delete</button>` : `<button class="ghost-button" data-action="close-modal" type="button">Cancel</button>`}
+      <button class="primary-button" type="submit">Save contact</button>
+    </div>
+  `;
+  openModal(existing ? "Edit Contact" : "Add Contact", form);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (existing) Object.assign(existing, data);
+    else state.contacts.unshift(makeContact(data));
+    closeModal();
+    currentView = "contacts";
+    render();
+  });
+}
+
+function deleteContact(id) {
+  if (!id || !confirm("Delete this contact?")) return;
+  state.contacts = (state.contacts || []).filter((contact) => contact.id !== id);
+  closeModal();
+  currentView = "contacts";
+  render();
+}
+
+function openMyContactForm() {
+  const name = state.settings.currentUser || profile?.full_name || profile?.email?.split("@")[0] || "Me";
+  const existing = (state.contacts || []).find((contact) => contact.contactType === "Team" && (contact.name === name || contact.email === profile?.email));
+  openContactForm(existing || makeContact({ name, contactType: "Team", email: profile?.email || "" }));
+}
+
+function upsertClientContact(job) {
+  if (!job?.name) return;
+  state.contacts = state.contacts || [];
+  const match = state.contacts.find((contact) => contact.contactType === "Client" && (
+    (job.email && contact.email === job.email) ||
+    (job.phone && contact.phone === job.phone) ||
+    contact.name === job.name
+  ));
+  const data = {
+    name: job.name,
+    contactType: "Client",
+    phone: job.phone || "",
+    email: job.email || "",
+    address: job.address || "",
+    notes: job.notes || ""
+  };
+  if (match) Object.assign(match, data);
+  else state.contacts.unshift(makeContact(data));
 }
 
 function openItemForm(kind, jobId, itemId) {
@@ -889,10 +1108,21 @@ function openItemForm(kind, jobId, itemId) {
     const data = Object.fromEntries(new FormData(form).entries());
     if (itemId) Object.assign(item, data);
     else job[config.list].push({ id: uid(kind), complete: false, ...data });
+    if (["schedule", "work-order", "sub"].includes(kind)) upsertSubContact(data);
     log(job, `${config.title} ${itemId ? "updated" : "added"}`);
     closeModal();
     render();
   });
+}
+
+function upsertSubContact(data) {
+  const name = data.subcontractor || data.name;
+  if (!name) return;
+  state.contacts = state.contacts || [];
+  const match = state.contacts.find((contact) => contact.contactType === "Subcontractor" && contact.name === name);
+  const contactData = { name, contactType: "Subcontractor", trade: data.trade || "", notes: data.notes || "" };
+  if (match) Object.assign(match, contactData);
+  else state.contacts.unshift(makeContact(contactData));
 }
 
 function inputField(name, label, type = "text", choices = [], value = "") {
@@ -1004,14 +1234,18 @@ function handleAction(target) {
   const id = target.dataset.id;
   if (action === "close-modal") return closeModal();
   if (action === "add-job") return openJobForm();
+  if (action === "add-contact") return openContactForm();
+  if (action === "edit-contact") return openContactForm((state.contacts || []).find((contact) => contact.id === id));
+  if (action === "delete-contact") return deleteContact(id);
+  if (action === "edit-my-contact") return openMyContactForm();
   if (action === "add-note") return openNoteForm(id);
   if (action === "open-job") { activeJobId = id; currentView = "detail"; return render(); }
   if (action === "calendar-mode") { sessionStorage.setItem("calendar.mode", target.dataset.mode); return renderCalendar(); }
   if (action === "calendar-view") { sessionStorage.setItem("calendar.view", target.dataset.mode); return renderCalendar(); }
-  if (action === "calendar-prev") { calendarCursor.setMonth(calendarCursor.getMonth() - 1); return renderCalendar(); }
-  if (action === "calendar-next") { calendarCursor.setMonth(calendarCursor.getMonth() + 1); return renderCalendar(); }
+  if (action === "calendar-prev") { shiftCalendar(-1); return renderCalendar(); }
+  if (action === "calendar-next") { shiftCalendar(1); return renderCalendar(); }
   if (action === "calendar-today") { calendarCursor = new Date(`${todayIso}T12:00:00`); selectedCalendarDate = todayIso; return renderCalendar(); }
-  if (action === "select-calendar-date") { selectedCalendarDate = target.dataset.date; return renderCalendar(); }
+  if (action === "select-calendar-date") { selectedCalendarDate = target.dataset.date; calendarCursor = new Date(`${selectedCalendarDate}T12:00:00`); return renderCalendar(); }
   if (action === "add-calendar-event") return openCalendarEventForm();
   if (action === "export-calendar") return exportCalendarEvent(target.dataset.job, target.dataset.kind, id);
   if (action === "filter-notes") { findJob(target.dataset.job).noteFilter = target.dataset.user; return render(); }
@@ -1028,6 +1262,8 @@ function handleAction(target) {
   if (action === "complete-task") return toggleItem("tasks", target.dataset.job, id, true);
   if (action === "print-work-order") return printWorkOrder(findJob(target.dataset.job), findJob(target.dataset.job).workOrders.find((w) => w.id === id));
   if (action === "save-settings") return saveSettings();
+  if (action === "add-list-item") return addListItem(target.dataset.list);
+  if (action === "remove-list-item") return removeListItem(target.dataset.list, target.dataset.value);
   if (action === "clear-app-date") {
     state.settings.appDate = "";
     state.settings.appTime = "";
@@ -1043,10 +1279,10 @@ function handleAction(target) {
 }
 
 async function clearWorkspaceData() {
-  state = { settings: { ...defaults, companyName: company?.name || "" }, jobs: [], calendarEvents: [], notifications: [] };
+  state = { settings: { ...defaults, companyName: company?.name || "" }, jobs: [], calendarEvents: [], notifications: [], contacts: [] };
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   if (cloudReady) {
-    for (const table of ["notifications", "mentions", "notes", "calendar_events", "punch_list_items", "work_orders", "schedule_items", "tasks", "jobs"]) {
+    for (const table of ["notifications", "mentions", "notes", "calendar_events", "contacts", "punch_list_items", "work_orders", "schedule_items", "tasks", "jobs"]) {
       await supabase.from(table).delete().eq("company_id", company.id);
     }
   }
@@ -1072,18 +1308,34 @@ function toggleItem(list, jobId, id, complete) {
 
 function saveSettings() {
   state.settings.companyName = document.querySelector("#companyName").value || "";
-  state.settings.teamMembers = lines("#teamMembers");
   state.settings.currentUser = document.querySelector("#currentUser").value || state.settings.teamMembers[0] || "";
   state.settings.appDate = document.querySelector("#appDate")?.value || "";
   state.settings.appTime = document.querySelector("#appTime")?.value || "";
   todayIso = getAppTodayIso();
-  state.settings.trades = lines("#trades");
-  state.settings.statuses = lines("#statuses");
   render();
 }
 
 function lines(selector) {
   return document.querySelector(selector).value.split("\n").map((x) => x.trim()).filter(Boolean);
+}
+
+function addListItem(listName) {
+  const input = document.querySelector(`#${listName}Input`);
+  const value = input?.value?.trim();
+  if (!value || !Array.isArray(state.settings[listName])) return;
+  if (!state.settings[listName].includes(value)) state.settings[listName].push(value);
+  if (listName === "teamMembers" && !state.settings.currentUser) state.settings.currentUser = value;
+  saveState();
+  renderSettings();
+}
+
+function removeListItem(listName, encodedValue) {
+  const value = decodeURIComponent(encodedValue || "");
+  if (!value || !Array.isArray(state.settings[listName])) return;
+  state.settings[listName] = state.settings[listName].filter((item) => item !== value);
+  if (listName === "teamMembers" && state.settings.currentUser === value) state.settings.currentUser = state.settings.teamMembers[0] || "";
+  saveState();
+  renderSettings();
 }
 
 function findJob(id) { return state.jobs.find((job) => job.id === id); }
@@ -1175,6 +1427,31 @@ function filterCalendarEvents(events, mode) {
     const eventDate = new Date(`${event.date}T00:00:00`);
     return eventDate >= start && eventDate < end;
   });
+}
+
+function shiftCalendar(direction) {
+  const mode = sessionStorage.getItem("calendar.view") || "month";
+  if (mode === "day") {
+    const next = new Date(`${selectedCalendarDate}T12:00:00`);
+    next.setDate(next.getDate() + direction);
+    selectedCalendarDate = localDateInputValue(next);
+    calendarCursor = new Date(next);
+    return;
+  }
+  if (mode === "week") {
+    const next = new Date(`${selectedCalendarDate}T12:00:00`);
+    next.setDate(next.getDate() + (direction * 7));
+    selectedCalendarDate = localDateInputValue(next);
+    calendarCursor = new Date(next);
+    return;
+  }
+  calendarCursor.setMonth(calendarCursor.getMonth() + direction);
+}
+
+function weekStart(dateIso) {
+  const date = new Date(`${dateIso}T12:00:00`);
+  date.setDate(date.getDate() - date.getDay());
+  return date;
 }
 
 function exportCalendarEvent(jobId, kind, sourceId) {
@@ -1301,7 +1578,7 @@ function emptyState(message, buttonText = "") {
   </section>`;
 }
 function pill(text, tone = "") { return `<span class="pill ${tone}">${text}</span>`; }
-function field(label, value) { return `<div class="field"><span>${label}</span><strong>${value || "Not set"}</strong></div>`; }
+function field(label, value) { return `<div class="field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "Not set")}</strong></div>`; }
 function options(items, selected) { return items.map((item) => `<option ${item === selected ? "selected" : ""}>${item}</option>`).join(""); }
 function selectHtml(id, items, selected) { return `<select id="${id}">${options(items, selected)}</select>`; }
 function unique(items) { return [...new Set(items)]; }
@@ -1335,7 +1612,7 @@ document.addEventListener("input", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260609-2224");
+  navigator.serviceWorker.register("./service-worker.js?v=20260609-2318");
 }
 
 boot();
