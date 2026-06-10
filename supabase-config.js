@@ -1,3 +1,3 @@
 export const SUPABASE_URL = "https://opuazyjejcibutbglfc.supabase.co";
-export const SUPABASE_ANON_KEY = "sb_publishable_dwZLtsvsYj6ovCWMVr9Frw_v8rLd_6Z";
+export const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9wdWF6eXpqZWpjaWJ1dGJnbGZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwNDA3NzYsImV4cCI6MjA5NjYxNjc3Nn0.3FzEcMiN6NEm7ajb6kjm5ZU1nAttDAE_tM8abrotVRc";
 export const DEFAULT_COMPANY_NAME = "JobCommand Beta";
