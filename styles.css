@@ -57,7 +57,7 @@ button { cursor: pointer; }
   padding: 0;
   background: transparent;
   border: 0;
-  border-radius: 0;
+  border-radius: 10px;
   box-shadow: none;
 }
 
@@ -512,6 +512,7 @@ h3 { margin-bottom: 9px; font-size: 0.9rem; letter-spacing: 0; }
 .auth-logo {
   width: min(100%, 300px);
   height: auto;
+  border-radius: 14px;
 }
 
 .diagnostics-card {
@@ -771,7 +772,8 @@ h3 { margin-bottom: 9px; font-size: 0.9rem; letter-spacing: 0; }
   font-weight: 800;
 }
 
-.quick-status {
+.quick-status,
+.assignment-panel select {
   width: 100%;
   min-height: 42px;
   padding: 8px 10px;
@@ -780,6 +782,121 @@ h3 { margin-bottom: 9px; font-size: 0.9rem; letter-spacing: 0; }
   background: #fff;
   color: var(--ink);
   font-weight: 750;
+}
+
+.quick-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.quick-controls label,
+.assignment-panel label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.assignment-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px;
+  background: #f6f9fb;
+  border: 1px solid #dce6ec;
+  border-radius: var(--radius);
+}
+
+.view-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 6px;
+  background: #edf4f7;
+  border: 1px solid #cbdde6;
+  border-radius: 999px;
+}
+
+.view-switch button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 999px;
+  color: #345263;
+  background: transparent;
+  font-weight: 900;
+}
+
+.view-switch button.active {
+  color: #071017;
+  background: #e3a22a;
+  box-shadow: 0 4px 10px rgba(17,24,32,0.12);
+}
+
+.team-board {
+  display: grid;
+  gap: 12px;
+}
+
+.team-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(21, 27, 31, 0.06);
+}
+
+.team-lane {
+  display: grid;
+  gap: 7px;
+}
+
+.team-lane h3 {
+  margin: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.team-job-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 9px 10px;
+  text-align: left;
+  color: var(--ink);
+  background: #f8fafb;
+  border: 1px solid #dce5ea;
+  border-radius: var(--radius);
+}
+
+.team-job-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.team-job-row b {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  color: #071017;
+  background: #f3b13e;
+  border-radius: 50%;
+}
+
+.compact-empty {
+  padding: 10px;
+  min-height: auto;
 }
 
 .filters, .toolbar {
@@ -1047,10 +1164,11 @@ label {
   .settings-grid { grid-template-columns: 1fr 1fr; }
   .settings-card.wide { grid-column: 1 / -1; }
   .contact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .team-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
-  .brand-logo { width: 96px; height: 42px; }
+  .brand-logo { width: 104px; height: 40px; border-radius: 8px; }
   .nav-item { font-size: 0.58rem; }
   .nav-icon { width: 17px; height: 17px; }
   .calendar-titlebar {
@@ -1079,6 +1197,10 @@ label {
   }
   .selected-date-panel .primary-button {
     width: 100%;
+  }
+  .quick-controls,
+  .assignment-panel {
+    grid-template-columns: 1fr;
   }
   .settings-hero {
     grid-template-columns: 1fr;

@@ -1,4 +1,4 @@
-const CACHE_NAME = "jobcommand-v12-nav-contact-autofill";
+const CACHE_NAME = "jobcommand-v13-team-pm-logo";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();

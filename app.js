@@ -665,6 +665,7 @@ function renderJobs() {
   } : null;
   const filters = getFilters();
   const jobs = state.jobs.filter((job) => matchesFilters(job, filters));
+  const jobView = sessionStorage.getItem("jobs.view") || "board";
   if (!state.jobs.length) {
     view.innerHTML = emptyState("No jobs yet. Add your first job to build your production board.", "Add Job");
     return;
@@ -674,6 +675,10 @@ function renderJobs() {
       <div><h2>Production Board</h2><p class="subtle">${jobs.length} of ${state.jobs.length} jobs shown</p></div>
       <button class="primary-button" data-action="add-job" type="button">Add Job</button>
     </section>
+    <section class="view-switch" aria-label="Job view">
+      <button class="${jobView === "board" ? "active" : ""}" data-action="jobs-view" data-mode="board" type="button">Board</button>
+      <button class="${jobView === "team" ? "active" : ""}" data-action="jobs-view" data-mode="team" type="button">By Team</button>
+    </section>
     <section class="filters">
       <input id="search" placeholder="Search jobs, customer, address" value="${filters.search}" />
       ${selectHtml("statusFilter", ["All statuses", ...state.settings.statuses], filters.status)}
@@ -682,7 +687,7 @@ function renderJobs() {
       ${selectHtml("pmFilter", ["All PMs", ...state.settings.teamMembers], filters.pm)}
       ${selectHtml("tradeFilter", ["All trades", ...state.settings.trades], filters.trade)}
     </section>
-    <section class="stack">${jobs.length ? jobs.map(jobCard).join("") : `<div class="empty">No jobs match those filters.</div>`}</section>
+    ${jobView === "team" ? renderTeamBreakdown(jobs) : `<section class="stack">${jobs.length ? jobs.map(jobCard).join("") : `<div class="empty">No jobs match those filters.</div>`}</section>`}
   `;
   ["search", "statusFilter", "typeFilter", "salesFilter", "pmFilter", "tradeFilter"].forEach((id) => {
     document.querySelector(`#${id}`).addEventListener("input", () => {
@@ -695,6 +700,28 @@ function renderJobs() {
     search.focus({ preventScroll: true });
     search.setSelectionRange(activeSelection.start, activeSelection.end);
   }
+}
+
+function renderTeamBreakdown(jobs) {
+  const members = unique([...state.settings.teamMembers, ...jobs.map((job) => job.productionManager).filter(Boolean), ...jobs.map((job) => job.salesRep).filter(Boolean)]);
+  if (!members.length) return `<section class="empty">No team members set up yet.</section>`;
+  return `<section class="team-board">${members.map((member) => {
+    const pmJobs = jobs.filter((job) => job.productionManager === member);
+    const salesJobs = jobs.filter((job) => job.salesRep === member && job.productionManager !== member);
+    const dueTasks = jobs.flatMap((job) => job.tasks.filter((taskItem) => taskItem.assignedTo === member && !taskItem.complete).map((taskItem) => ({ job, taskItem })));
+    return `<article class="team-card">
+      <div class="row-between"><div><h2>${escapeHtml(member)}</h2><p class="subtle">${pmJobs.length} PM jobs / ${salesJobs.length} sales jobs / ${dueTasks.length} open tasks</p></div>${pill(`${pmJobs.length + salesJobs.length} jobs`, pmJobs.length ? "blue" : "")}</div>
+      <div class="team-lane"><h3>Project Manager</h3>${pmJobs.length ? pmJobs.map(teamJobRow).join("") : `<div class="empty compact-empty">No PM jobs.</div>`}</div>
+      <div class="team-lane"><h3>Sales / Assist</h3>${salesJobs.length ? salesJobs.map(teamJobRow).join("") : `<div class="empty compact-empty">No sales jobs.</div>`}</div>
+    </article>`;
+  }).join("")}</section>`;
+}
+
+function teamJobRow(job) {
+  return `<button class="team-job-row" data-action="open-job" data-id="${job.id}" type="button">
+    <span><strong>${escapeHtml(job.name)}</strong><small>${escapeHtml(job.status || "No status")} / ${escapeHtml(nextStep(job))}</small></span>
+    ${needsAttention(job) ? `<b>!</b>` : ""}
+  </button>`;
 }
 
 function renderContacts() {
@@ -788,7 +815,10 @@ function jobCard(job) {
       ${statusBadge(job.status)}
     </div>
     <p class="next-step"><strong>Next:</strong> ${nextStep(job)}</p>
-    <select class="quick-status" data-action="status" data-id="${job.id}">${state.settings.statuses.map((s) => `<option ${s === job.status ? "selected" : ""}>${s}</option>`).join("")}</select>
+    <div class="quick-controls">
+      <label>Status<select class="quick-status" data-action="status" data-id="${job.id}">${state.settings.statuses.map((s) => `<option ${s === job.status ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+      <label>PM<select class="quick-status" data-action="assign-pm" data-id="${job.id}"><option></option>${options(state.settings.teamMembers, job.productionManager)}</select></label>
+    </div>
     <div class="job-meta"><span>PM: ${job.productionManager || "Unassigned"}</span><span>Sales: ${job.salesRep || "Unassigned"}</span></div>
     <div class="pill-row">${attentionPill(job)}${job.startDate ? pill(fmt(job.startDate), "blue") : pill("Missing schedule", "warn")}${job.materialsStatus === "Missing" ? pill("Missing materials", "danger") : pill(job.materialsStatus)}</div>
   </article>`;
@@ -805,6 +835,10 @@ function renderJobDetail() {
         <article class="card">
           <div class="card-head"><h2>Job Info</h2><button class="secondary-button" data-action="edit-job" data-id="${job.id}" type="button">Edit</button></div>
           <div class="field-grid">${field("Phone", job.phone)}${field("Email", job.email)}${field("Address", job.address)}${field("Type", job.type)}${field("Payment", job.paymentType)}${field("Sales rep", job.salesRep)}${field("PM", job.productionManager)}${field("Status", job.status)}${field("Start", fmt(job.startDate))}${field("Target", fmt(job.targetDate))}${field("Materials", job.materialsStatus)}${field("Update needed", job.homeownerUpdateNeeded ? "Yes" : "No")}</div>
+          <div class="assignment-panel">
+            <label>Project manager<select data-action="assign-pm" data-id="${job.id}"><option></option>${options(state.settings.teamMembers, job.productionManager)}</select></label>
+            <label>Sales rep<select data-action="assign-sales" data-id="${job.id}"><option></option>${options(state.settings.teamMembers, job.salesRep)}</select></label>
+          </div>
           <p class="subtle">${job.notes || "No notes yet."}</p>
           <div class="row-actions"><button class="secondary-button" data-action="draft-update" data-id="${job.id}" type="button">Draft homeowner update</button><button class="ghost-button" data-action="toggle-update" data-id="${job.id}" type="button">${job.homeownerUpdateNeeded ? "Clear update flag" : "Needs update"}</button></div>
         </article>
@@ -1333,6 +1367,9 @@ function handleAction(target) {
   if (action === "toggle-update") { job.homeownerUpdateNeeded = !job.homeownerUpdateNeeded; log(job, "Homeowner update flag changed"); return render(); }
   if (action === "draft-update") return draftHomeownerUpdate(job);
   if (action === "status") { findJob(id).status = target.value; log(findJob(id), `Status changed to ${target.value}`); return render(); }
+  if (action === "assign-pm") { findJob(id).productionManager = target.value; log(findJob(id), `Project manager assigned to ${target.value || "Unassigned"}`); return render(); }
+  if (action === "assign-sales") { findJob(id).salesRep = target.value; log(findJob(id), `Sales rep assigned to ${target.value || "Unassigned"}`); return render(); }
+  if (action === "jobs-view") { sessionStorage.setItem("jobs.view", target.dataset.mode); return renderJobs(); }
   if (action.startsWith("add-")) return openItemForm(action.replace("add-", ""), id);
   if (action.startsWith("edit-")) return openItemForm(action.replace("edit-", ""), target.dataset.job, id);
   if (action.startsWith("delete-")) return deleteItem(action.replace("delete-", ""), target.dataset.job, id);
@@ -1685,13 +1722,17 @@ document.querySelector(".bottom-nav")?.addEventListener("click", (event) => {
   currentView = button.dataset.view;
   render();
 });
-document.addEventListener("click", (event) => handleAction(event.target.closest("[data-action]") || {}));
-document.addEventListener("input", (event) => {
-  if (event.target?.dataset?.action === "status") handleAction(event.target);
+document.addEventListener("click", (event) => {
+  const actionTarget = event.target.closest("[data-action]");
+  if (["status", "assign-pm", "assign-sales"].includes(actionTarget?.dataset?.action)) return;
+  handleAction(actionTarget || {});
+});
+document.addEventListener("change", (event) => {
+  if (["status", "assign-pm", "assign-sales"].includes(event.target?.dataset?.action)) handleAction(event.target);
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260609-2342");
+  navigator.serviceWorker.register("./service-worker.js?v=20260610-0052");
 }
 
 boot();
