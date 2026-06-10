@@ -1,9 +1,10 @@
-const CACHE_NAME = "jobcommand-v2";
+const CACHE_NAME = "jobcommand-v3";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./supabase-config.js",
   "./manifest.json",
   "./icons/icon.svg",
   "./icons/jobcommand-logo.png"

@@ -1,10 +1,23 @@
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+import { DEFAULT_COMPANY_NAME, SUPABASE_ANON_KEY, SUPABASE_URL } from "./supabase-config.js";
+
 const STORE_KEY = "contractorProductionCrm.v1";
 const todayIso = new Date().toISOString().slice(0, 10);
+const isSupabaseConfigured = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.length > 40;
+const supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+let session = null;
+let profile = null;
+let company = null;
+let workspaceMembers = [];
+let cloudReady = false;
+let saveTimer = null;
+let calendarCursor = new Date(`${todayIso}T12:00:00`);
+let selectedCalendarDate = todayIso;
 
 const defaults = {
   companyName: "",
   currentUser: "Seth",
-  teamMembers: ["Seth", "Lynn", "Rayson"],
+  teamMembers: ["Seth", "Lynn"],
   trades: [
     "Roofing", "Gutters", "Plumbing rough-in", "Electrical rough-in", "HVAC",
     "Drywall", "Paint", "Tile", "Flooring", "Trim",
@@ -44,6 +57,7 @@ function loadState() {
   const fresh = {
     settings: { ...defaults },
     jobs: [],
+    calendarEvents: [],
     notifications: []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(fresh));
@@ -54,6 +68,7 @@ function sanitizeState(data) {
   const clean = {
     settings: { ...defaults, ...(data.settings || {}) },
     jobs: Array.isArray(data.jobs) ? data.jobs.filter((job) => !isOldDemoJob(job)).map(normalizeJob) : [],
+    calendarEvents: Array.isArray(data.calendarEvents) ? data.calendarEvents : [],
     notifications: Array.isArray(data.notifications) ? data.notifications : []
   };
   localStorage.setItem(STORE_KEY, JSON.stringify(clean));
@@ -83,6 +98,192 @@ function isOldDemoJob(job) {
 function saveState() {
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   companyLabel.textContent = state.settings.companyName || "JobCommand";
+  if (cloudReady) scheduleCloudSave();
+}
+
+async function boot() {
+  if (!isSupabaseConfigured) {
+    renderSetupRequired();
+    return;
+  }
+  const { data } = await supabase.auth.getSession();
+  session = data.session;
+  supabase.auth.onAuthStateChange((_event, nextSession) => {
+    session = nextSession;
+    cloudReady = false;
+    boot();
+  });
+  if (!session) {
+    renderLogin();
+    return;
+  }
+  await loadWorkspace();
+  render();
+}
+
+function renderSetupRequired() {
+  viewTitle.textContent = "Setup";
+  view.innerHTML = `<section class="auth-card">
+    <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
+    <h2>Supabase setup required</h2>
+    <p class="subtle">Paste your Supabase project URL and anon public key into <strong>supabase-config.js</strong>, then upload the app to GitHub Pages.</p>
+  </section>`;
+}
+
+function renderLogin() {
+  viewTitle.textContent = "Login";
+  companyLabel.textContent = "JobCommand";
+  document.querySelectorAll(".nav-item").forEach((button) => button.classList.remove("active"));
+  view.innerHTML = `<section class="auth-card">
+    <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
+    <h2>Sign in to JobCommand</h2>
+    <p class="subtle">Use the beta account created in Supabase for Seth or Lynn.</p>
+    <form id="loginForm" class="form-grid">
+      <label>Email<input name="email" type="email" required autocomplete="email" /></label>
+      <label>Password<input name="password" type="password" required autocomplete="current-password" /></label>
+      <button class="primary-button full" type="submit">Log in</button>
+    </form>
+  </section>`;
+  document.querySelector("#loginForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const { error } = await supabase.auth.signInWithPassword(form);
+    if (error) alert(error.message);
+  });
+}
+
+async function loadWorkspace() {
+  const user = session.user;
+  const displayName = user.user_metadata?.full_name || user.email.split("@")[0];
+  await supabase.from("profiles").upsert({ id: user.id, email: user.email, full_name: displayName }, { onConflict: "id" });
+  const { data: memberships, error } = await supabase.from("company_members").select("company_id, role, companies(id, name)").eq("user_id", user.id).limit(1);
+  if (error) throw error;
+  if (!memberships?.length) {
+    const { data: newCompany, error: companyError } = await supabase.from("companies").insert({ name: DEFAULT_COMPANY_NAME, owner_id: user.id }).select().single();
+    if (companyError) throw companyError;
+    await supabase.from("company_members").insert({ company_id: newCompany.id, user_id: user.id, role: "owner" });
+    company = newCompany;
+  } else {
+    company = memberships[0].companies;
+  }
+  profile = { id: user.id, email: user.email, full_name: displayName };
+  await loadCloudState();
+  cloudReady = true;
+}
+
+async function loadCloudState() {
+  const companyId = company.id;
+  const [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes] = await Promise.all([
+    supabase.from("settings").select("*").eq("company_id", companyId).maybeSingle(),
+    supabase.from("company_members").select("user_id, profiles(full_name, email)").eq("company_id", companyId),
+    supabase.from("jobs").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
+    supabase.from("tasks").select("*").eq("company_id", companyId),
+    supabase.from("schedule_items").select("*").eq("company_id", companyId),
+    supabase.from("work_orders").select("*").eq("company_id", companyId),
+    supabase.from("punch_list_items").select("*").eq("company_id", companyId),
+    supabase.from("notes").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
+    supabase.from("mentions").select("*").eq("company_id", companyId),
+    supabase.from("notifications").select("*").eq("company_id", companyId).eq("user_id", profile.id).order("created_at", { ascending: false }),
+    supabase.from("calendar_events").select("*").eq("company_id", companyId)
+  ]);
+  const teamMembers = membersRes.data?.map((m) => m.profiles?.full_name || m.profiles?.email?.split("@")[0]).filter(Boolean) || ["Seth", "Lynn"];
+  workspaceMembers = membersRes.data || [];
+  state = {
+    settings: { ...defaults, ...(settingsRes.data?.data || {}), companyName: company.name, currentUser: profile.full_name, teamMembers },
+    jobs: (jobsRes.data || []).map((row) => cloudJob(row, tasksRes.data || [], scheduleRes.data || [], workOrdersRes.data || [], punchRes.data || [], notesRes.data || [], mentionsRes.data || [], calendarRes.data || [])),
+    calendarEvents: (calendarRes.data || []).filter((item) => !item.job_id).map(cloudStandaloneEvent),
+    notifications: (notificationsRes.data || []).map(cloudNotification)
+  };
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+}
+
+function cloudJob(row, tasks, schedules, workOrders, punches, notes, mentions, calendarEvents) {
+  const jobNotes = notes.filter((item) => item.job_id === row.id);
+  return normalizeJob({
+    id: row.id,
+    name: row.name,
+    phone: row.phone || "",
+    email: row.email || "",
+    address: row.address || "",
+    type: row.job_type || "",
+    paymentType: row.payment_type || "",
+    salesRep: row.sales_rep || "",
+    productionManager: row.production_manager || "",
+    status: row.status || "New Lead",
+    startDate: row.start_date || "",
+    targetDate: row.target_completion_date || "",
+    inspectionDate: row.inspection_date || "",
+    materialsStatus: row.materials_status || "Not needed",
+    homeownerUpdateNeeded: Boolean(row.homeowner_update_needed),
+    notes: row.notes || "",
+    timeline: row.timeline || [],
+    tasks: tasks.filter((item) => item.job_id === row.id).map((item) => ({ id: item.id, title: item.title, assignedTo: item.assigned_to || "", dueDate: item.due_date || "", time: item.due_time || "", priority: item.priority || "Normal", complete: Boolean(item.complete), notes: item.notes || "" })),
+    schedule: schedules.filter((item) => item.job_id === row.id).map((item) => ({ id: item.id, trade: item.trade || "", subcontractor: item.subcontractor || "", date: item.scheduled_date || "", time: item.scheduled_time || "", status: item.status || "", notes: item.notes || "" })),
+    workOrders: workOrders.filter((item) => item.job_id === row.id).map((item) => ({ id: item.id, trade: item.trade || "", scope: item.scope || "", date: item.scheduled_date || "", time: item.scheduled_time || "", subcontractor: item.subcontractor || "", notes: item.notes || "" })),
+    punchList: punches.filter((item) => item.job_id === row.id).map((item) => ({ id: item.id, title: item.title, assignedTo: item.assigned_to || "", dueDate: item.due_date || "", time: item.due_time || "", complete: Boolean(item.complete), notes: item.notes || "" })),
+    reminders: calendarEvents.filter((item) => item.job_id === row.id && ["Reminder", "Inspection", "Custom"].includes(item.event_type)).map((item) => ({ id: item.id, title: item.title, assignedTo: item.assigned_to || "", date: item.event_date || "", time: item.event_time || "", status: item.status || "", notes: item.notes || "", eventType: item.event_type })),
+    notesActivity: jobNotes.map((item) => ({ id: item.id, author: item.author_name || "", authorId: item.author_id || "", text: item.body || "", mentions: mentions.filter((m) => m.note_id === item.id).map((m) => m.tagged_name), timestamp: item.created_at }))
+  });
+}
+
+function cloudNotification(row) {
+  return { id: row.id, type: row.type, userId: row.user_id, taggedUser: row.tagged_name || state.settings.currentUser, jobId: row.job_id, noteId: row.note_id, timestamp: row.created_at, read: Boolean(row.read) };
+}
+
+function cloudStandaloneEvent(row) {
+  return { id: row.id, title: row.title, eventType: row.event_type || "Custom", date: row.event_date || "", time: row.event_time || "", assignedTo: row.assigned_to || "", status: row.status || "", notes: row.notes || "" };
+}
+
+function scheduleCloudSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveCloudState().catch((error) => console.error("Supabase save failed", error)), 700);
+}
+
+async function saveCloudState() {
+  if (!cloudReady || !company) return;
+  const companyId = company.id;
+  if (state.settings.companyName && state.settings.companyName !== company.name) {
+    await supabase.from("companies").update({ name: state.settings.companyName }).eq("id", companyId);
+    company.name = state.settings.companyName;
+  }
+  await supabase.from("settings").upsert({ company_id: companyId, data: state.settings }, { onConflict: "company_id" });
+  await supabase.from("jobs").upsert(state.jobs.map((job) => ({
+    id: job.id,
+    company_id: companyId,
+    name: job.name,
+    phone: job.phone,
+    email: job.email,
+    address: job.address,
+    job_type: job.type,
+    payment_type: job.paymentType,
+    sales_rep: job.salesRep,
+    production_manager: job.productionManager,
+    status: job.status,
+    start_date: job.startDate || null,
+    target_completion_date: job.targetDate || null,
+    inspection_date: job.inspectionDate || null,
+    materials_status: job.materialsStatus,
+    homeowner_update_needed: job.homeownerUpdateNeeded,
+    notes: job.notes,
+    timeline: job.timeline
+  })), { onConflict: "id" });
+  await replaceChildren("tasks", state.jobs.flatMap((job) => job.tasks.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, title: item.title, assigned_to: item.assignedTo, due_date: item.dueDate || null, due_time: item.time || null, priority: item.priority, complete: item.complete, notes: item.notes }))));
+  await replaceChildren("schedule_items", state.jobs.flatMap((job) => job.schedule.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, trade: item.trade, subcontractor: item.subcontractor, scheduled_date: item.date || null, scheduled_time: item.time || null, status: item.status, notes: item.notes }))));
+  await replaceChildren("work_orders", state.jobs.flatMap((job) => job.workOrders.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, trade: item.trade, scope: item.scope, scheduled_date: item.date || null, scheduled_time: item.time || null, subcontractor: item.subcontractor, notes: item.notes }))));
+  await replaceChildren("punch_list_items", state.jobs.flatMap((job) => job.punchList.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, title: item.title, assigned_to: item.assignedTo, due_date: item.dueDate || null, due_time: item.time || null, complete: item.complete, notes: item.notes }))));
+  await replaceChildren("calendar_events", state.jobs.flatMap((job) => job.reminders.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, title: item.title, event_type: item.eventType || "Reminder", event_date: item.date || null, event_time: item.time || null, assigned_to: item.assignedTo, status: item.status, notes: item.notes }))).concat((state.calendarEvents || []).map((item) => ({ id: item.id, company_id: companyId, job_id: null, title: item.title, event_type: item.eventType || "Custom", event_date: item.date || null, event_time: item.time || null, assigned_to: item.assignedTo, status: item.status, notes: item.notes }))));
+  await replaceChildren("notes", state.jobs.flatMap((job) => job.notesActivity.map((item) => ({ id: item.id, company_id: companyId, job_id: job.id, author_id: item.authorId || profile.id, author_name: item.author || profile.full_name, body: item.text, created_at: item.timestamp }))));
+  await replaceChildren("mentions", state.jobs.flatMap((job) => job.notesActivity.flatMap((note) => (note.mentions || []).map((name) => ({ id: `${note.id}_${name}`, company_id: companyId, job_id: job.id, note_id: note.id, tagged_name: name, tagged_user_id: memberIdByName(name) })))));
+  await replaceChildren("notifications", state.notifications.map((item) => ({ id: item.id, company_id: companyId, user_id: item.userId || memberIdByName(item.taggedUser), type: item.type, tagged_name: item.taggedUser, job_id: item.jobId, note_id: item.noteId, read: item.read, created_at: item.timestamp })));
+}
+
+async function replaceChildren(table, rows) {
+  await supabase.from(table).delete().eq("company_id", company.id);
+  if (rows.length) await supabase.from(table).insert(rows);
+}
+
+function memberIdByName(name) {
+  return workspaceMembers.find((member) => (member.profiles?.full_name || member.profiles?.email?.split("@")[0]) === name)?.user_id || profile.id;
 }
 
 function makeJob(data = {}) {
@@ -138,8 +339,11 @@ function renderToday() {
   const overdue = allTasks().filter(({ item }) => !item.complete && item.dueDate && item.dueDate < todayIso);
   const waitingOnSubs = jobs.filter((job) => job.status === "Waiting on Sub");
   const mentions = unreadMentions();
+  const calendarToday = buildCalendarEvents().filter((event) => event.date === todayIso);
   const sections = [
+    ["Notifications", inAppNotifications(mentions, dueToday, overdue, calendarToday)],
     ["Mentions", mentions],
+    ["Calendar items due today", calendarToday],
     ["Jobs starting today", jobs.filter((job) => job.startDate === todayIso)],
     ["Jobs starting this week", jobs.filter((job) => job.startDate >= todayIso && job.startDate <= weekEnd)],
     ["Tasks due today", dueToday],
@@ -158,7 +362,7 @@ function renderToday() {
     return;
   }
   view.innerHTML = `
-    ${commandHeader("JobCommand", todayLabel(), `${attentionJobs().length} jobs need attention today.`)}
+    ${commandHeader("JobCommand", todayLabel(), `${attentionJobs().length} jobs need attention today. ${mentions.length} unread mention${mentions.length === 1 ? "" : "s"}.`)}
     <section class="metric-grid section">
       <div class="metric"><strong>${activeJobs().length}</strong><span>Active Jobs</span></div>
       <div class="metric attention"><strong>${attentionJobs().length}</strong><span>Need Attention</span></div>
@@ -184,9 +388,18 @@ function renderTodaySection([title, items]) {
   return `<section class="section"><h2>${title}</h2><div class="stack">${
     items.length ? items.map((entry) => {
       if (entry.note) return mentionRow(entry);
+      if (entry.notice) return notificationRow(entry);
+      if (entry.kind) return calendarCard(entry);
       return entry.job ? taskRow(entry) : miniJob(entry);
     }).join("") : `<div class="empty">Nothing here right now.</div>`
   }</div></section>`;
+}
+
+function notificationRow(entry) {
+  return `<article class="list-row notification-card">
+    <div class="row-between"><div><strong>${entry.title}</strong><p class="subtle">${entry.detail}</p></div>${pill(entry.type, entry.tone || "blue")}</div>
+    ${entry.jobId ? `<button class="ghost-button" data-action="open-job" data-id="${entry.jobId}" type="button">Open job</button>` : ""}
+  </article>`;
 }
 
 function mentionRow(entry) {
@@ -371,37 +584,58 @@ function renderSchedule() {
 
 function renderCalendar() {
   viewTitle.textContent = "Calendar";
-  const mode = sessionStorage.getItem("calendar.mode") || "today";
-  const events = filterCalendarEvents(buildCalendarEvents(), mode);
+  const events = buildCalendarEvents();
+  const monthEvents = events.filter((event) => event.date?.startsWith(monthKey(calendarCursor)));
+  const selectedEvents = events.filter((event) => event.date === selectedCalendarDate);
   view.innerHTML = `
     <section class="calendar-head section">
-      <div><h2>Internal Calendar</h2><p class="subtle">Local beta calendar for jobs, tasks, trades, work orders, reminders, and punch dates.</p></div>
-      <div class="segmented">
-        ${["today", "week", "month"].map((item) => `<button class="${mode === item ? "active" : ""}" data-action="calendar-mode" data-mode="${item}" type="button">${item[0].toUpperCase() + item.slice(1)}</button>`).join("")}
+      <div><h2>${calendarCursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p class="subtle">Jobs, tasks, trades, work orders, reminders, inspections, and custom events.</p></div>
+      <div class="calendar-controls">
+        <button class="ghost-button" data-action="calendar-prev" type="button">Prev</button>
+        <button class="secondary-button" data-action="calendar-today" type="button">Today</button>
+        <button class="ghost-button" data-action="calendar-next" type="button">Next</button>
       </div>
     </section>
-    <section class="stack">${events.length ? groupedCalendar(events) : `<div class="empty">No calendar items yet.</div>`}</section>
+    <section class="calendar-grid-card section">
+      <div class="calendar-weekdays">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<span>${day}</span>`).join("")}</div>
+      <div class="calendar-grid">${monthCells(calendarCursor, monthEvents)}</div>
+    </section>
+    <section class="toolbar board-toolbar">
+      <div><h2>${fmt(selectedCalendarDate)}</h2><p class="subtle">${selectedEvents.length} event${selectedEvents.length === 1 ? "" : "s"} selected</p></div>
+      <button class="primary-button" data-action="add-calendar-event" type="button">Add Calendar Event</button>
+    </section>
+    <section class="stack">${selectedEvents.length ? selectedEvents.map(calendarCard).join("") : `<div class="empty">No calendar items for this date.</div>`}</section>
   `;
 }
 
-function groupedCalendar(events) {
-  let lastDate = "";
-  return events.map((event) => {
-    const header = event.date !== lastDate ? `<h2 class="date-group">${fmt(event.date)}</h2>` : "";
-    lastDate = event.date;
-    return `${header}${calendarCard(event)}`;
+function monthCells(cursor, events) {
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const first = new Date(year, month, 1);
+  const start = new Date(first);
+  start.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    const iso = date.toISOString().slice(0, 10);
+    const dayEvents = events.filter((event) => event.date === iso);
+    const visible = dayEvents.slice(0, 2);
+    return `<button class="calendar-day ${date.getMonth() !== month ? "muted-day" : ""} ${iso === todayIso ? "today-day" : ""} ${iso === selectedCalendarDate ? "selected-day" : ""}" data-action="select-calendar-date" data-date="${iso}" type="button">
+      <span class="day-number">${date.getDate()}</span>
+      <span class="day-events">${visible.map((event) => `<span class="event-chip">${shortEvent(event)}</span>`).join("")}${dayEvents.length > 2 ? `<span class="event-chip more">+${dayEvents.length - 2} more</span>` : ""}</span>
+    </button>`;
   }).join("");
 }
 
 function calendarCard(event) {
   return `<article class="calendar-card list-row">
     <div class="row-between">
-      <div><strong>${event.title}</strong><p class="subtle">${event.job.name}${event.job.address ? " / " + event.job.address : ""}</p></div>
+      <div><strong>${event.title}</strong><p class="subtle">${event.job?.name || "General calendar"}${event.job?.address ? " / " + event.job.address : ""}</p></div>
       ${pill(event.type, event.tone || "blue")}
     </div>
     <p class="subtle">${event.time || "All day"} ${event.trade ? "/ " + event.trade : ""} ${event.assignedTo ? "/ " + event.assignedTo : ""} ${event.status ? "/ " + event.status : ""}</p>
     ${event.notes ? `<p>${event.notes}</p>` : ""}
-    <div class="row-actions"><button class="secondary-button" data-action="open-job" data-id="${event.job.id}" type="button">Open job</button><button class="ghost-button" data-action="export-calendar" data-job="${event.job.id}" data-kind="${event.kind}" data-id="${event.sourceId}" type="button">Add to Phone Calendar</button></div>
+    <div class="row-actions">${event.job?.id ? `<button class="secondary-button" data-action="open-job" data-id="${event.job.id}" type="button">Open job</button>` : ""}<button class="ghost-button" data-action="export-calendar" data-job="${event.job?.id || ""}" data-kind="${event.kind}" data-id="${event.sourceId}" type="button">Add to Phone Calendar</button></div>
   </article>`;
 }
 
@@ -415,9 +649,10 @@ function renderSettings() {
   viewTitle.textContent = "Settings";
   view.innerHTML = `
     <section class="stack">
+      <article class="card"><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><button class="ghost-button" data-action="logout" type="button">Log out</button></article>
       <article class="card"><h2>Company</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></article>
       <article class="card"><h2>Lists</h2><label>Team members<textarea id="teamMembers" rows="4">${state.settings.teamMembers.join("\n")}</textarea></label><label>Trades<textarea id="trades" rows="6">${state.settings.trades.join("\n")}</textarea></label><label>Job statuses<textarea id="statuses" rows="7">${state.settings.statuses.join("\n")}</textarea></label><button class="primary-button" data-action="save-settings" type="button">Save settings</button></article>
-      <article class="card"><h2>Backup</h2><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></article>
+      <article class="card"><h2>Backup & Migration</h2><p class="subtle">Use export for a backup. Use import to bring an old localStorage backup into the active Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON to Workspace</button></div></article>
       <article class="card"><h2>Reset</h2><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></article>
     </section>
   `;
@@ -491,8 +726,8 @@ function openNoteForm(jobId) {
   form.className = "form-grid";
   form.innerHTML = `
     <label>Author<select name="author">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label>
-    <label class="full">Note<textarea name="text" rows="5" placeholder="Type a note. Use @Seth, @Lynn, or @Rayson to tag someone."></textarea></label>
-    <p class="subtle full">Mentions are local beta notifications only. Real push notifications will require authentication, notification permissions, and a backend later.</p>
+    <label class="full">Note<textarea name="text" rows="5" placeholder="Type a note. Use @Seth or @Lynn to tag someone."></textarea></label>
+    <p class="subtle full">Mentions create in-app notifications only. Real push notifications will require notification permissions and a backend service later.</p>
     <div class="modal-actions split-actions full"><button class="ghost-button" data-action="close-modal" type="button">Cancel</button><button class="primary-button" type="submit">Save note</button></div>
   `;
   openModal("Add Note", form);
@@ -500,12 +735,34 @@ function openNoteForm(jobId) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
     const mentions = extractMentions(data.text);
-    const note = { id: uid("note"), author: data.author, text: data.text, mentions, timestamp: new Date().toISOString() };
+    const note = { id: uid("note"), author: data.author, authorId: profile?.id || "", text: data.text, mentions, timestamp: new Date().toISOString() };
     job.notesActivity.unshift(note);
     log(job, `Note added by ${data.author || "Team"}`);
     mentions.forEach((name) => {
-      state.notifications.unshift({ id: uid("mention"), type: "mention", taggedUser: name, jobId: job.id, noteId: note.id, timestamp: note.timestamp, read: false });
+      state.notifications.unshift({ id: uid("mention"), type: "mention", taggedUser: name, userId: memberIdByName(name), jobId: job.id, noteId: note.id, timestamp: note.timestamp, read: false });
     });
+    closeModal();
+    render();
+  });
+}
+
+function openCalendarEventForm() {
+  const form = document.createElement("form");
+  form.className = "form-grid";
+  form.innerHTML = `
+    <label>Event title<input name="title" required /></label>
+    <label>Type<select name="eventType">${options(["Custom", "Reminder", "Inspection"], "Custom")}</select></label>
+    <label>Date<input name="date" type="date" value="${selectedCalendarDate}" required /></label>
+    <label>Time<input name="time" type="time" /></label>
+    <label>Assigned to<input name="assignedTo" /></label>
+    <label>Status<input name="status" /></label>
+    <label class="full">Notes<textarea name="notes" rows="4"></textarea></label>
+    <div class="modal-actions split-actions full"><button class="ghost-button" data-action="close-modal" type="button">Cancel</button><button class="primary-button" type="submit">Save event</button></div>
+  `;
+  openModal("Add Calendar Event", form);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.calendarEvents.unshift({ id: uid("cal"), ...Object.fromEntries(new FormData(form).entries()) });
     closeModal();
     render();
   });
@@ -540,7 +797,7 @@ function openImport() {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     try {
-      state = JSON.parse(new FormData(form).get("json"));
+      state = sanitizeState(JSON.parse(new FormData(form).get("json")));
       saveState();
       closeModal();
       render();
@@ -569,6 +826,11 @@ function handleAction(target) {
   if (action === "add-note") return openNoteForm(id);
   if (action === "open-job") { activeJobId = id; currentView = "detail"; return render(); }
   if (action === "calendar-mode") { sessionStorage.setItem("calendar.mode", target.dataset.mode); return renderCalendar(); }
+  if (action === "calendar-prev") { calendarCursor.setMonth(calendarCursor.getMonth() - 1); return renderCalendar(); }
+  if (action === "calendar-next") { calendarCursor.setMonth(calendarCursor.getMonth() + 1); return renderCalendar(); }
+  if (action === "calendar-today") { calendarCursor = new Date(`${todayIso}T12:00:00`); selectedCalendarDate = todayIso; return renderCalendar(); }
+  if (action === "select-calendar-date") { selectedCalendarDate = target.dataset.date; return renderCalendar(); }
+  if (action === "add-calendar-event") return openCalendarEventForm();
   if (action === "export-calendar") return exportCalendarEvent(target.dataset.job, target.dataset.kind, id);
   if (action === "filter-notes") { findJob(target.dataset.job).noteFilter = target.dataset.user; return render(); }
   if (action === "mark-mention-read") { markMentionRead(id); return render(); }
@@ -584,9 +846,21 @@ function handleAction(target) {
   if (action === "complete-task") return toggleItem("tasks", target.dataset.job, id, true);
   if (action === "print-work-order") return printWorkOrder(findJob(target.dataset.job), findJob(target.dataset.job).workOrders.find((w) => w.id === id));
   if (action === "save-settings") return saveSettings();
+  if (action === "logout") return supabase.auth.signOut();
   if (action === "export") return exportBackup();
   if (action === "import") return openImport();
-  if (action === "clear-data" && confirm("Clear all CRM data on this device?")) { localStorage.removeItem(STORE_KEY); state = loadState(); return render(); }
+  if (action === "clear-data" && confirm("Clear all shared JobCommand data for this workspace?")) return clearWorkspaceData();
+}
+
+async function clearWorkspaceData() {
+  state = { settings: { ...defaults, companyName: company?.name || "" }, jobs: [], calendarEvents: [], notifications: [] };
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  if (cloudReady) {
+    for (const table of ["notifications", "mentions", "notes", "calendar_events", "punch_list_items", "work_orders", "schedule_items", "tasks", "jobs"]) {
+      await supabase.from(table).delete().eq("company_id", company.id);
+    }
+  }
+  render();
 }
 
 function deleteItem(kind, jobId, id) {
@@ -638,6 +912,18 @@ function unreadMentions() {
     .filter(Boolean);
 }
 
+function inAppNotifications(mentions, dueToday, overdue, calendarToday) {
+  const assignedToMe = dueToday.filter(({ item }) => item.assignedTo === state.settings.currentUser);
+  const notices = [
+    ...mentions.map(({ job, note }) => ({ notice: true, type: "Mention", tone: "warn", title: `Tagged on ${job.name}`, detail: note.text, jobId: job.id })),
+    ...assignedToMe.map(({ job, item }) => ({ notice: true, type: "Task", title: item.title, detail: `${job.name} is assigned to you today.`, jobId: job.id })),
+    ...calendarToday.map((event) => ({ notice: true, type: event.type, title: event.title, detail: `${event.job?.name || "Calendar"} ${event.time ? "at " + event.time : "today"}`, jobId: event.job?.id })),
+    ...overdue.map(({ job, item }) => ({ notice: true, type: "Overdue", tone: "danger", title: item.title, detail: `${job.name} is overdue.`, jobId: job.id })),
+    ...attentionJobs().map((job) => ({ notice: true, type: "Attention", tone: "warn", title: job.name, detail: nextStep(job), jobId: job.id }))
+  ];
+  return notices.slice(0, 12);
+}
+
 function markMentionRead(id) {
   const notification = state.notifications.find((item) => item.id === id);
   if (notification) notification.read = true;
@@ -666,7 +952,7 @@ function nextStep(job) {
 }
 
 function buildCalendarEvents() {
-  return state.jobs.flatMap((job) => {
+  const jobEvents = state.jobs.flatMap((job) => {
     const events = [];
     if (job.startDate) events.push(calendarEvent(job, "start", "Job Start", job.startDate, "", "Job Start", "", job.productionManager, job.status, job.notes));
     if (job.targetDate) events.push(calendarEvent(job, "target", "Target Completion", job.targetDate, "", "Target", "", job.productionManager, job.status, job.notes));
@@ -677,7 +963,9 @@ function buildCalendarEvents() {
     job.punchList.forEach((item) => item.dueDate && events.push(calendarEvent(job, "punch", item.title, item.dueDate, item.time, "Punch List", "Punch list", item.assignedTo, item.complete ? "Complete" : "Open", item.notes, item.id)));
     job.reminders.forEach((item) => item.date && events.push(calendarEvent(job, "reminder", item.title, item.date, item.time, "Reminder", "", item.assignedTo, item.status, item.notes, item.id)));
     return events;
-  }).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+  });
+  const customEvents = (state.calendarEvents || []).filter((item) => item.date).map((item) => calendarEvent(null, "custom", item.title, item.date, item.time, item.eventType || "Custom", "", item.assignedTo, item.status, item.notes, item.id));
+  return jobEvents.concat(customEvents).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
 }
 
 function calendarEvent(job, kind, title, date, time, type, trade, assignedTo, status, notes, sourceId = kind) {
@@ -697,14 +985,14 @@ function filterCalendarEvents(events, mode) {
 }
 
 function exportCalendarEvent(jobId, kind, sourceId) {
-  const event = buildCalendarEvents().find((item) => item.job.id === jobId && item.kind === kind && item.sourceId === sourceId);
+  const event = buildCalendarEvents().find((item) => (item.job?.id || "") === jobId && item.kind === kind && item.sourceId === sourceId);
   if (!event) return alert("This item needs a date before it can be exported.");
   // True Apple/Google/Outlook calendar sync will require OAuth/API authentication and a backend service later.
   const ics = makeIcs(event);
   const blob = new Blob([ics], { type: "text/calendar" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `${slug(event.job.name)}-${slug(event.title)}.ics`;
+  link.download = `${slug(event.job?.name || "jobcommand")}-${slug(event.title)}.ics`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -713,26 +1001,26 @@ function makeIcs(event) {
   const start = icsDate(event.date, event.time);
   const end = icsDate(event.date, addOneHour(event.time));
   const description = [
-    `Job: ${event.job.name}`,
-    `Address: ${event.job.address || ""}`,
+    `Job: ${event.job?.name || "General calendar event"}`,
+    `Address: ${event.job?.address || ""}`,
     `Type: ${event.type}`,
     `Trade/Sub: ${event.trade || event.assignedTo || ""}`,
     `Status: ${event.status || ""}`,
     `Notes: ${event.notes || ""}`,
-    `Related job phone: ${event.job.phone || ""}`,
-    `Related job email: ${event.job.email || ""}`
+    `Related job phone: ${event.job?.phone || ""}`,
+    `Related job email: ${event.job?.email || ""}`
   ].map(escapeIcs).join("\\n");
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//JobCommand//Internal Beta//EN",
     "BEGIN:VEVENT",
-    `UID:${event.kind}-${event.sourceId}-${event.job.id}@jobcommand.local`,
+    `UID:${event.kind}-${event.sourceId}-${event.job?.id || "general"}@jobcommand.local`,
     `DTSTAMP:${icsDate(todayIso, "12:00")}`,
     `DTSTART:${start}`,
     `DTEND:${end}`,
-    `SUMMARY:${escapeIcs(`${event.title} - ${event.job.name}`)}`,
-    `LOCATION:${escapeIcs(event.job.address || "")}`,
+    `SUMMARY:${escapeIcs(`${event.title} - ${event.job?.name || "JobCommand"}`)}`,
+    `LOCATION:${escapeIcs(event.job?.address || "")}`,
     `DESCRIPTION:${description}`,
     "END:VEVENT",
     "END:VCALENDAR"
@@ -756,6 +1044,15 @@ function escapeIcs(value = "") {
 
 function slug(value = "") {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "event";
+}
+
+function monthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function shortEvent(event) {
+  const label = event.time ? event.time : event.type;
+  return `${label} ${event.title}`.slice(0, 18);
 }
 
 function emptyState(message, buttonText = "") {
@@ -794,4 +1091,4 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./service-worker.js");
 }
 
-render();
+boot();
