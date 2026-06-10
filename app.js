@@ -15,6 +15,8 @@ let selectedCalendarDate = todayIso;
 let configImportError = null;
 let supabaseInitError = null;
 let authStatus = null;
+let settingsNotice = null;
+let settingsNoticeTimer = null;
 
 const defaults = {
   companyName: "",
@@ -1027,18 +1029,25 @@ function renderSettings() {
   viewTitle.textContent = "Settings";
   view.innerHTML = `
     <section class="settings-hero section">
-      <div><p class="eyebrow">Workspace Controls</p><h2>Settings</h2><p>Manage account, beta team, production lists, app date, and backups.</p></div>
-      <button class="primary-button compact-action" data-action="save-settings" type="button">Save</button>
+      <div><p class="eyebrow">Workspace Controls</p><h2>Settings</h2><p>Manage account, beta team, production lists, app date, and backups.</p>${settingsNoticeMarkup()}</div>
+      <button class="primary-button compact-action" data-action="save-settings" type="button">Save Changes</button>
     </section>
     <section class="settings-grid">
       <article class="settings-card"><div class="settings-icon">A</div><div><h2>Account</h2><p class="subtle">${profile?.email || "Signed in"}</p><div class="row-actions"><button class="secondary-button" data-action="edit-my-contact" type="button">Edit my contact card</button><button class="ghost-button" data-action="logout" type="button">Log out</button></div></div></article>
       <article class="settings-card"><div class="settings-icon">W</div><div class="settings-fields"><h2>Workspace</h2><label>Company name<input id="companyName" value="${state.settings.companyName}"></label><label>Current user<select id="currentUser">${options(state.settings.teamMembers, state.settings.currentUser)}</select></label></div></article>
       <article class="settings-card"><div class="settings-icon">T</div><div class="settings-fields"><h2>App Date & Time</h2><p class="subtle">Use this for field testing or when your device/browser date is off.</p><label>App date<input id="appDate" type="date" value="${state.settings.appDate || localDateInputValue(new Date())}"></label><label>App time<input id="appTime" type="time" value="${state.settings.appTime || localTimeInputValue(new Date())}"></label><button class="ghost-button" data-action="clear-app-date" type="button">Use device date/time</button></div></article>
-      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><p class="subtle">Add or remove the values used in job forms and filters.</p>${listEditor("teamMembers", "Team members", state.settings.teamMembers, "Add team member")}${listEditor("trades", "Trades", state.settings.trades, "Add trade")}${listEditor("statuses", "Job statuses", state.settings.statuses, "Add status")}</div></article>
+      <article class="settings-card wide"><div class="settings-icon">L</div><div class="settings-fields"><h2>Production Lists</h2><p class="subtle">Add or remove the values used in job forms and filters.</p>${settingsListEditor("teamMembers", "Team members", state.settings.teamMembers, "Add team member")}${settingsListEditor("trades", "Trades", state.settings.trades, "Add trade")}${settingsListEditor("statuses", "Job statuses", state.settings.statuses, "Add status")}</div></article>
       <article class="settings-card"><div class="settings-icon">B</div><div><h2>Backup & Migration</h2><p class="subtle">Export a backup or import an old localStorage backup into this Supabase workspace.</p><div class="row-actions"><button class="secondary-button" data-action="export" type="button">Export backup JSON</button><button class="ghost-button" data-action="import" type="button">Import backup JSON</button></div></div></article>
       <article class="settings-card danger-zone"><div class="settings-icon">!</div><div><h2>Danger Zone</h2><p class="subtle">Clear shared data for this workspace.</p><button class="danger-button" data-action="clear-data" type="button">Clear all data</button></div></article>
     </section>
   `;
+  document.querySelectorAll(".inline-add input").forEach((input) => {
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addListItem(input.closest(".editable-list")?.dataset?.list);
+    });
+  });
 }
 
 function listEditor(listName, title, items, placeholder) {
@@ -1047,6 +1056,28 @@ function listEditor(listName, title, items, placeholder) {
     <div class="list-chip-grid">${items.map((item) => `<span class="edit-chip">${escapeHtml(item)}<button data-action="remove-list-item" data-list="${listName}" data-value="${encodeURIComponent(item)}" type="button" aria-label="Remove ${escapeHtml(item)}">×</button></span>`).join("")}</div>
     <div class="inline-add"><input id="${listName}Input" placeholder="${placeholder}" /><button class="secondary-button" data-action="add-list-item" data-list="${listName}" type="button">Add</button></div>
   </div>`;
+}
+
+function settingsListEditor(listName, title, items, placeholder) {
+  return `<div class="editable-list" data-list="${listName}">
+    <div class="row-between"><h3>${title}</h3><span class="tiny">${items.length} saved</span></div>
+    <div class="editable-list-rows">${items.map((item, index) => `<div class="editable-list-row"><span><strong>${escapeHtml(item)}</strong><small>${escapeHtml(title)} item ${index + 1}</small></span><button class="ghost-button mini-button" data-action="remove-list-item" data-list="${listName}" data-value="${encodeURIComponent(item)}" type="button" aria-label="Remove ${escapeHtml(item)}">Remove</button></div>`).join("") || `<div class="empty compact-empty">No ${title.toLowerCase()} saved yet.</div>`}</div>
+    <div class="inline-add"><input id="${listName}Input" placeholder="${placeholder}" /><button class="secondary-button" data-action="add-list-item" data-list="${listName}" type="button">Add Item</button></div>
+  </div>`;
+}
+
+function settingsNoticeMarkup() {
+  if (!settingsNotice) return `<div class="settings-status neutral"><span>Ready</span><strong>Changes save to this workspace.</strong></div>`;
+  return `<div class="settings-status ${settingsNotice.kind || "success"}"><span>${escapeHtml(settingsNotice.label)}</span><strong>${escapeHtml(settingsNotice.message)}</strong></div>`;
+}
+
+function showSettingsNotice(message, kind = "success", label = "Saved") {
+  settingsNotice = { message, kind, label };
+  clearTimeout(settingsNoticeTimer);
+  settingsNoticeTimer = setTimeout(() => {
+    settingsNotice = null;
+    if (currentView === "settings") renderSettings();
+  }, 2600);
 }
 
 function openJobForm(job = makeJob()) {
@@ -1390,6 +1421,7 @@ function handleAction(target) {
     state.settings.appDate = "";
     state.settings.appTime = "";
     todayIso = getAppTodayIso();
+    showSettingsNotice("Using this device's current date and time.", "success", "Updated");
     return render();
   }
   if (action === "retry-boot") return boot();
@@ -1434,6 +1466,7 @@ function saveSettings() {
   state.settings.appDate = document.querySelector("#appDate")?.value || "";
   state.settings.appTime = document.querySelector("#appTime")?.value || "";
   todayIso = getAppTodayIso();
+  showSettingsNotice("Settings saved and queued for sync.", "success", "Saved");
   render();
 }
 
@@ -1445,7 +1478,12 @@ function addListItem(listName) {
   const input = document.querySelector(`#${listName}Input`);
   const value = input?.value?.trim();
   if (!value || !Array.isArray(state.settings[listName])) return;
-  if (!state.settings[listName].includes(value)) state.settings[listName].push(value);
+  if (!state.settings[listName].includes(value)) {
+    state.settings[listName].push(value);
+    showSettingsNotice(`${value} added.`, "success", "Added");
+  } else {
+    showSettingsNotice(`${value} is already in this list.`, "warn", "No Change");
+  }
   if (listName === "teamMembers" && !state.settings.currentUser) state.settings.currentUser = value;
   saveState();
   renderSettings();
@@ -1456,6 +1494,7 @@ function removeListItem(listName, encodedValue) {
   if (!value || !Array.isArray(state.settings[listName])) return;
   state.settings[listName] = state.settings[listName].filter((item) => item !== value);
   if (listName === "teamMembers" && state.settings.currentUser === value) state.settings.currentUser = state.settings.teamMembers[0] || "";
+  showSettingsNotice(`${value} removed.`, "success", "Removed");
   saveState();
   renderSettings();
 }
@@ -1738,7 +1777,7 @@ document.addEventListener("change", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js?v=20260610-0111");
+  navigator.serviceWorker.register("./service-worker.js?v=20260610-0120");
 }
 
 boot();
