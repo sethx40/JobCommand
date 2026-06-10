@@ -1,10 +1,12 @@
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import { DEFAULT_COMPANY_NAME, SUPABASE_ANON_KEY, SUPABASE_URL } from "./supabase-config.js";
+import * as SupabaseConfig from "./supabase-config.js";
 
 const STORE_KEY = "contractorProductionCrm.v1";
 const todayIso = new Date().toISOString().slice(0, 10);
-const isSupabaseConfigured = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.length > 40;
-const supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const SUPABASE_URL = SupabaseConfig.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = SupabaseConfig.SUPABASE_ANON_KEY || SupabaseConfig.SUPABASE_PUBLISHABLE_KEY || "";
+const DEFAULT_COMPANY_NAME = SupabaseConfig.DEFAULT_COMPANY_NAME || "JobCommand Beta";
+const isSupabaseConfigured = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.length > 30;
+let supabase = null;
 let session = null;
 let profile = null;
 let company = null;
@@ -102,23 +104,33 @@ function saveState() {
 }
 
 async function boot() {
-  if (!isSupabaseConfigured) {
-    renderSetupRequired();
-    return;
-  }
-  const { data } = await supabase.auth.getSession();
-  session = data.session;
-  supabase.auth.onAuthStateChange((_event, nextSession) => {
-    session = nextSession;
+  try {
     cloudReady = false;
-    boot();
-  });
-  if (!session) {
-    renderLogin();
-    return;
+    if (!isSupabaseConfigured) {
+      renderSetupRequired();
+      return;
+    }
+    if (!supabase) {
+      const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
+      supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      supabase.auth.onAuthStateChange((_event, nextSession) => {
+        session = nextSession;
+        cloudReady = false;
+        boot().catch((error) => renderError("Auth state error", error));
+      });
+    }
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    session = data?.session || null;
+    if (!session) {
+      renderLogin();
+      return;
+    }
+    await loadWorkspace();
+    render();
+  } catch (error) {
+    renderError("JobCommand could not start", error);
   }
-  await loadWorkspace();
-  render();
 }
 
 function renderSetupRequired() {
@@ -127,6 +139,22 @@ function renderSetupRequired() {
     <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
     <h2>Supabase setup required</h2>
     <p class="subtle">Paste your Supabase project URL and anon public key into <strong>supabase-config.js</strong>, then upload the app to GitHub Pages.</p>
+  </section>`;
+}
+
+function renderError(title, error, action = "") {
+  const message = error?.message || String(error || "Unknown error");
+  viewTitle.textContent = "Setup Error";
+  companyLabel.textContent = "JobCommand";
+  view.innerHTML = `<section class="auth-card error-card">
+    <img class="auth-logo" src="icons/jobcommand-logo.png" alt="JobCommand" />
+    <h2>${escapeHtml(title)}</h2>
+    <p class="subtle">${escapeHtml(message)}</p>
+    ${action ? `<p class="subtle">${escapeHtml(action)}</p>` : ""}
+    <div class="row-actions">
+      <button class="secondary-button" data-action="retry-boot" type="button">Retry</button>
+      <button class="ghost-button" data-action="logout" type="button">Log out</button>
+    </div>
   </section>`;
 }
 
@@ -155,17 +183,20 @@ function renderLogin() {
 async function loadWorkspace() {
   const user = session.user;
   const displayName = user.user_metadata?.full_name || user.email.split("@")[0];
-  await supabase.from("profiles").upsert({ id: user.id, email: user.email, full_name: displayName }, { onConflict: "id" });
+  const { error: profileError } = await supabase.from("profiles").upsert({ id: user.id, email: user.email, full_name: displayName }, { onConflict: "id" });
+  if (profileError) throw new Error(`Profile setup failed: ${profileError.message}`);
   const { data: memberships, error } = await supabase.from("company_members").select("company_id, role, companies(id, name)").eq("user_id", user.id).limit(1);
-  if (error) throw error;
+  if (error) throw new Error(`Workspace lookup failed: ${error.message}`);
   if (!memberships?.length) {
     const { data: newCompany, error: companyError } = await supabase.from("companies").insert({ name: DEFAULT_COMPANY_NAME, owner_id: user.id }).select().single();
-    if (companyError) throw companyError;
-    await supabase.from("company_members").insert({ company_id: newCompany.id, user_id: user.id, role: "owner" });
+    if (companyError) throw new Error(`Workspace creation failed: ${companyError.message}`);
+    const { error: memberError } = await supabase.from("company_members").insert({ company_id: newCompany.id, user_id: user.id, role: "owner" });
+    if (memberError) throw new Error(`Workspace membership setup failed: ${memberError.message}`);
     company = newCompany;
   } else {
     company = memberships[0].companies;
   }
+  if (!company?.id) throw new Error("No workspace/company was found for this user. Add the user to company_members or sign in as the workspace owner first.");
   profile = { id: user.id, email: user.email, full_name: displayName };
   await loadCloudState();
   cloudReady = true;
@@ -186,6 +217,8 @@ async function loadCloudState() {
     supabase.from("notifications").select("*").eq("company_id", companyId).eq("user_id", profile.id).order("created_at", { ascending: false }),
     supabase.from("calendar_events").select("*").eq("company_id", companyId)
   ]);
+  const failed = [settingsRes, membersRes, jobsRes, tasksRes, scheduleRes, workOrdersRes, punchRes, notesRes, mentionsRes, notificationsRes, calendarRes].find((result) => result.error);
+  if (failed) throw new Error(`Data fetch failed: ${failed.error.message}`);
   const teamMembers = membersRes.data?.map((m) => m.profiles?.full_name || m.profiles?.email?.split("@")[0]).filter(Boolean) || ["Seth", "Lynn"];
   workspaceMembers = membersRes.data || [];
   state = {
@@ -846,7 +879,8 @@ function handleAction(target) {
   if (action === "complete-task") return toggleItem("tasks", target.dataset.job, id, true);
   if (action === "print-work-order") return printWorkOrder(findJob(target.dataset.job), findJob(target.dataset.job).workOrders.find((w) => w.id === id));
   if (action === "save-settings") return saveSettings();
-  if (action === "logout") return supabase.auth.signOut();
+  if (action === "retry-boot") return boot();
+  if (action === "logout") return supabase ? supabase.auth.signOut() : renderLogin();
   if (action === "export") return exportBackup();
   if (action === "import") return openImport();
   if (action === "clear-data" && confirm("Clear all shared JobCommand data for this workspace?")) return clearWorkspaceData();
@@ -1046,6 +1080,15 @@ function slug(value = "") {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "event";
 }
 
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function monthKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
@@ -1074,9 +1117,9 @@ function log(job, text) { job?.timeline?.unshift({ id: uid("log"), date: todayIs
 function openModal(title, content) { modalTitle.textContent = title; modalBody.replaceChildren(content); modal.showModal(); }
 function closeModal() { modal.close(); modalBody.replaceChildren(); }
 
-document.querySelector("#quickAddBtn").addEventListener("click", () => openJobForm());
-document.querySelector("#modalCloseBtn").addEventListener("click", closeModal);
-document.querySelector(".bottom-nav").addEventListener("click", (event) => {
+document.querySelector("#quickAddBtn")?.addEventListener("click", () => openJobForm());
+document.querySelector("#modalCloseBtn")?.addEventListener("click", closeModal);
+document.querySelector(".bottom-nav")?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-view]");
   if (!button) return;
   currentView = button.dataset.view;
